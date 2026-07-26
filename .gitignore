@@ -7,6 +7,7 @@
 *.dll
 *.so
 *.dylib
+bin/
 
 # Test binary, built with `go test -c`
 *.test
@@ -28,5 +29,19 @@ go.work.sum
 .env
 
 # Editor/IDE
-# .idea/
-# .vscode/
+.idea/
+.vscode/
+.zed
+
+# Internal notes not to be committed
+.docs
+
+# AI folders
+.claude
+.cursor
+.copilot
+.aider
+.continue
+
+# OS-specific files
+.DS_Store
