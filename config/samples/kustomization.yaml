@@ -1,0 +1,7 @@
+## Append samples of your project ##
+resources:
+- core_v1alpha1_environmenttemplate.yaml
+- core_v1alpha1_ephemeralenvironment.yaml
+- core_v1alpha1_sharedcomponent.yaml
+- core_v1alpha1_sharedcomponentprovider.yaml
+# +kubebuilder:scaffold:manifestskustomizesamples

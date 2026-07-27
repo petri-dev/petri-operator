@@ -1,0 +1,150 @@
+version: "2"
+run:
+  allow-parallel-runners: true
+linters:
+  default: none
+  enable:
+    - asasalint
+    - asciicheck
+    - bidichk
+    - bodyclose
+    - containedctx
+    - copyloopvar
+    - depguard
+    - dupword
+    - durationcheck
+    - errcheck
+    - errchkjson
+    - fatcontext
+    - ginkgolinter
+    - gocritic
+    - godot
+    - goprintffuncname
+    - gosec
+    - govet
+    - importas
+    - ineffassign
+    - intrange
+    - misspell
+    - nilerr
+    - noctx
+    - nolintlint
+    - nosprintfhostport
+    - paralleltest
+    - prealloc
+    - revive
+    - staticcheck
+    - testifylint
+    - unconvert
+    - unused
+    - usestdlibvars
+    - whitespace
+  settings:
+    depguard:
+      rules:
+        forbid-sort-pkg:
+          deny:
+            - pkg: sort
+              desc: Should be replaced with slices package
+    gocritic:
+      disabled-checks:
+        - appendAssign
+        - dupImport
+        - ifElseChain
+        - octalLiteral
+        - typeDefFirst
+        - unnamedResult
+        - whyNoLint
+        - unnecessaryBlock
+        - rangeValCopy
+        - hugeParam
+        - commentedOutCode
+        - emptyStringTest
+        - singleCaseSwitch
+        - nestingReduce
+        - tooManyResultsChecker
+      enabled-tags:
+        - diagnostic
+        - experimental
+        - performance
+    gosec:
+      excludes:
+        - G307
+        - G108
+        - G401
+        - G505
+        - G402
+        - G404
+        - G101
+        - G306
+        - G704
+        - G705
+    misspell:
+      ignore-rules:
+        - creater
+    nolintlint:
+      require-specific: true
+      allow-unused: false
+    paralleltest:
+      check-cleanup: true
+    revive:
+      confidence: 0.6
+      rules:
+        - name: context-keys-type
+        - name: duplicated-imports
+        - name: error-return
+        - name: error-strings
+        - name: error-naming
+        - name: if-return
+        - name: import-shadowing
+        - name: increment-decrement
+        - name: var-declaration
+        - name: package-comments
+        - name: range
+        - name: receiver-naming
+        - name: time-naming
+        - name: errorf
+        - name: superfluous-else
+        - name: unreachable-code
+        - name: bool-literal-in-expr
+        - name: constant-logical-expr
+  exclusions:
+    generated: lax
+    presets:
+      - comments
+      - common-false-positives
+      - legacy
+      - std-error-handling
+    rules:
+      - linters:
+          - gosec
+        path: test/e2e/*
+      - linters:
+          - staticcheck
+        text: QF1008
+    paths:
+      - third_party$
+      - builtin$
+      - examples$
+      - listers
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
+formatters:
+  enable:
+    - gci
+    - gofmt
+  settings:
+    gci:
+      sections:
+        - standard
+        - default
+        - blank
+        - dot
+      custom-order: true
+  exclusions:
+    generated: disable
+    paths:
+      - third_party$
+      - builtin$
+      - examples$

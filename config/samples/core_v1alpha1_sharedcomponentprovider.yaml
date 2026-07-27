@@ -1,0 +1,9 @@
+apiVersion: core.petri.run/v1alpha1
+kind: SharedComponentProvider
+metadata:
+  labels:
+    app.kubernetes.io/name: petri
+    app.kubernetes.io/managed-by: kustomize
+  name: sharedcomponentprovider-sample
+spec:
+  # TODO(user): Add fields here
