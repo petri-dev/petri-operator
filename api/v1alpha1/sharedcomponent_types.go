@@ -24,7 +24,7 @@ import (
 // EDIT THIS FILE!  THIS IS SCAFFOLDING FOR YOU TO OWN!
 // NOTE: json tags are required.  Any new fields you add must have json tags for the fields to be serialized.
 
-// SharedComponentSpec defines the desired state of SharedComponent
+// SharedComponentSpec defines the desired state of SharedComponent.
 type SharedComponentSpec struct {
 	// INSERT ADDITIONAL SPEC FIELDS - desired state of cluster
 	// Important: Run "make" to regenerate code after modifying this file
@@ -62,7 +62,7 @@ type SharedComponentStatus struct {
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 
-// SharedComponent is the Schema for the sharedcomponents API
+// SharedComponent is the Schema for the sharedcomponents API.
 type SharedComponent struct {
 	metav1.TypeMeta `json:",inline"`
 
@@ -81,7 +81,7 @@ type SharedComponent struct {
 
 // +kubebuilder:object:root=true
 
-// SharedComponentList contains a list of SharedComponent
+// SharedComponentList contains a list of SharedComponent.
 type SharedComponentList struct {
 	metav1.TypeMeta `json:",inline"`
 	metav1.ListMeta `json:"metadata,omitzero"`

@@ -22,6 +22,9 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/nuromirg/petri/api/v1alpha1"
+	"github.com/nuromirg/petri/internal/deployer"
+	"github.com/nuromirg/petri/internal/helpers"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -32,10 +35,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
-
-	"github.com/nuromirg/petri/api/v1alpha1"
-	"github.com/nuromirg/petri/internal/deployer"
-	"github.com/nuromirg/petri/internal/helpers"
 )
 
 const (
@@ -49,7 +48,7 @@ const (
 
 var ErrNamespaceNotManaged = errors.New("namespace not managed by Petri")
 
-// EphemeralEnvironmentReconciler reconciles a EphemeralEnvironment object
+// EphemeralEnvironmentReconciler reconciles a EphemeralEnvironment object.
 type EphemeralEnvironmentReconciler struct {
 	client.Client
 	Scheme   *runtime.Scheme
@@ -92,19 +91,19 @@ func (r *EphemeralEnvironmentReconciler) reconcile(ctx context.Context, env *v1a
 	template, err := r.getEnvironmentTemplate(ctx, env)
 	if err != nil {
 		if apierrors.IsNotFound(err) {
-			return r.setFailed(ctx, env, "TemplateNotFound", "template "+env.Spec.Template+" not found")
+			return ctrl.Result{}, r.setFailed(ctx, env, "TemplateNotFound", "template "+env.Spec.Template+" not found")
 		}
 		return ctrl.Result{}, err
 	}
 
 	targetNs, err := r.targetNamespace(env)
 	if err != nil {
-		return r.setFailed(ctx, env, "InvalidConfiguration", err.Error())
+		return ctrl.Result{}, r.setFailed(ctx, env, "InvalidConfiguration", err.Error())
 	}
 
 	if err := r.createNamespace(ctx, targetNs); err != nil {
 		if errors.Is(err, ErrNamespaceNotManaged) {
-			return r.setFailed(ctx, env, "NamespaceNotManaged", err.Error())
+			return ctrl.Result{}, r.setFailed(ctx, env, "NamespaceNotManaged", err.Error())
 		}
 
 		return ctrl.Result{}, err
@@ -118,7 +117,7 @@ func (r *EphemeralEnvironmentReconciler) reconcile(ctx context.Context, env *v1a
 	for _, component := range template.Spec.Components {
 		releaseName := env.Name + "-" + component.Name
 		if len(releaseName) > helmMaxReleaseNameLength {
-			return r.setFailed(ctx, env, "InvalidConfiguration", fmt.Sprintf("release name %q exceeds 53 characters", releaseName))
+			return ctrl.Result{}, r.setFailed(ctx, env, "InvalidConfiguration", fmt.Sprintf("release name %q exceeds 53 characters", releaseName))
 		}
 
 		// TODO: design a dependsOn deploy ordering
@@ -127,7 +126,7 @@ func (r *EphemeralEnvironmentReconciler) reconcile(ctx context.Context, env *v1a
 			ReleaseName: env.Name + "-" + component.Name,
 			Component:   component,
 		}); err != nil {
-			return r.setFailed(ctx, env, "DeployFailed", err.Error())
+			return ctrl.Result{}, r.setFailed(ctx, env, "DeployFailed", err.Error())
 		}
 	}
 
@@ -254,7 +253,7 @@ func (r *EphemeralEnvironmentReconciler) SetupWithManager(mgr ctrl.Manager) erro
 		Complete(r)
 }
 
-func (r *EphemeralEnvironmentReconciler) setFailed(ctx context.Context, env *v1alpha1.EphemeralEnvironment, reason, message string) (ctrl.Result, error) {
+func (r *EphemeralEnvironmentReconciler) setFailed(ctx context.Context, env *v1alpha1.EphemeralEnvironment, reason, message string) error {
 	_ = ctx
 	meta.SetStatusCondition(&env.Status.Conditions, metav1.Condition{
 		Type:               "Ready",
@@ -264,6 +263,6 @@ func (r *EphemeralEnvironmentReconciler) setFailed(ctx context.Context, env *v1a
 		ObservedGeneration: env.Generation,
 	})
 	env.Status.Phase = v1alpha1.PhaseFailed
-	// return ctrl.Result{}, r.Status().Update(ctx, env)
-	return ctrl.Result{}, nil
+	// return r.Status().Update(ctx, env)
+	return nil
 }

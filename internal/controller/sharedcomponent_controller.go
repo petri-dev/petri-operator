@@ -19,15 +19,14 @@ package controller
 import (
 	"context"
 
+	corev1alpha1 "github.com/nuromirg/petri/api/v1alpha1"
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
-
-	corev1alpha1 "github.com/nuromirg/petri/api/v1alpha1"
 )
 
-// SharedComponentReconciler reconciles a SharedComponent object
+// SharedComponentReconciler reconciles a SharedComponent object.
 type SharedComponentReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme

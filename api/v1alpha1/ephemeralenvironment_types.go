@@ -31,7 +31,7 @@ const (
 	PhaseTerminating Phase = "Terminating"
 )
 
-// EphemeralEnvironmentSpec defines the desired state of EphemeralEnvironment
+// EphemeralEnvironmentSpec defines the desired state of EphemeralEnvironment.
 type EphemeralEnvironmentSpec struct {
 	Template  string     `json:"template"`
 	Source    SourceSpec `json:"source"`
@@ -64,7 +64,7 @@ type EphemeralEnvironmentStatus struct {
 // +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=`.status.phase`
 // +kubebuilder:printcolumn:name="URL",type=string,JSONPath=`.status.url`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
-// EphemeralEnvironment is the Schema for the ephemeralenvironments API
+// EphemeralEnvironment is the Schema for the ephemeralenvironments API.
 type EphemeralEnvironment struct {
 	metav1.TypeMeta `json:",inline"`
 
@@ -83,7 +83,7 @@ type EphemeralEnvironment struct {
 
 // +kubebuilder:object:root=true
 
-// EphemeralEnvironmentList contains a list of EphemeralEnvironment
+// EphemeralEnvironmentList contains a list of EphemeralEnvironment.
 type EphemeralEnvironmentList struct {
 	metav1.TypeMeta `json:",inline"`
 	metav1.ListMeta `json:"metadata,omitzero"`

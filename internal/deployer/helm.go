@@ -116,7 +116,7 @@ func (h *HelmDeployer) initActionConfig(namespace string) (*action.Configuration
 		return h.restConfig
 	})
 
-	if err := cfg.Init(flags, namespace, "secret", func(format string, v ...interface{}) {}); err != nil {
+	if err := cfg.Init(flags, namespace, "secret", func(format string, v ...any) {}); err != nil {
 		return nil, fmt.Errorf("failed to init action config: %w", err)
 	}
 

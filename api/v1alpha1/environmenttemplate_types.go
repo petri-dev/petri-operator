@@ -67,7 +67,7 @@ type EnvironmentTemplateStatus struct {
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 
-// EnvironmentTemplate is the Schema for the environmenttemplates API
+// EnvironmentTemplate is the Schema for the environmenttemplates API.
 type EnvironmentTemplate struct {
 	metav1.TypeMeta `json:",inline"`
 
@@ -86,7 +86,7 @@ type EnvironmentTemplate struct {
 
 // +kubebuilder:object:root=true
 
-// EnvironmentTemplateList contains a list of EnvironmentTemplate
+// EnvironmentTemplateList contains a list of EnvironmentTemplate.
 type EnvironmentTemplateList struct {
 	metav1.TypeMeta `json:",inline"`
 	metav1.ListMeta `json:"metadata,omitzero"`

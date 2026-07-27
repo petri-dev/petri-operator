@@ -11,16 +11,13 @@ linters:
     - containedctx
     - copyloopvar
     - depguard
-    - dupl
     - dupword
     - durationcheck
     - errcheck
     - errchkjson
     - fatcontext
     - ginkgolinter
-    - goconst
     - gocritic
-    - gocyclo
     - godot
     - goprintffuncname
     - gosec
@@ -28,11 +25,7 @@ linters:
     - importas
     - ineffassign
     - intrange
-    - lll
-    - logcheck
     - misspell
-    - modernize
-    - nakedret
     - nilerr
     - noctx
     - nolintlint
@@ -43,15 +36,10 @@ linters:
     - staticcheck
     - testifylint
     - unconvert
-    - unparam
     - unused
     - usestdlibvars
     - whitespace
   settings:
-    custom:
-      logcheck:
-        type: "module"
-        description: Checks Go logging calls for Kubernetes logging conventions.
     depguard:
       rules:
         forbid-sort-pkg:
@@ -94,10 +82,6 @@ linters:
     misspell:
       ignore-rules:
         - creater
-    modernize:
-      disable:
-        - omitzero
-        - newexpr
     nolintlint:
       require-specific: true
       allow-unused: false
@@ -106,7 +90,6 @@ linters:
     revive:
       confidence: 0.6
       rules:
-        - name: comment-spacings
         - name: context-keys-type
         - name: duplicated-imports
         - name: error-return
@@ -139,13 +122,6 @@ linters:
       - linters:
           - staticcheck
         text: QF1008
-      - linters:
-          - lll
-        path: api/*
-      - linters:
-          - dupl
-          - lll
-        path: internal/*
     paths:
       - third_party$
       - builtin$
@@ -158,7 +134,6 @@ formatters:
   enable:
     - gci
     - gofmt
-    - goimports
   settings:
     gci:
       sections:

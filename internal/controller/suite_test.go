@@ -23,9 +23,7 @@ import (
 	"testing"
 	"time"
 
-	. "github.com/onsi/ginkgo/v2"
-	. "github.com/onsi/gomega"
-
+	corev1alpha1 "github.com/nuromirg/petri/api/v1alpha1"
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -33,8 +31,8 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
-	corev1alpha1 "github.com/nuromirg/petri/api/v1alpha1"
-	// +kubebuilder:scaffold:imports
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
 )
 
 // These tests use Ginkgo (BDD-style Go testing framework). Refer to
@@ -49,15 +47,16 @@ var (
 )
 
 func TestControllers(t *testing.T) {
+	t.Parallel()
 	RegisterFailHandler(Fail)
 
 	RunSpecs(t, "Controller Suite")
 }
 
-var _ = BeforeSuite(func() {
+var _ = BeforeSuite(func(suiteCtx context.Context) {
 	logf.SetLogger(zap.New(zap.WriteTo(GinkgoWriter), zap.UseDevMode(true)))
 
-	ctx, cancel = context.WithCancel(context.TODO())
+	ctx, cancel = context.WithCancel(suiteCtx) //nolint:fatcontext
 
 	var err error
 	err = corev1alpha1.AddToScheme(scheme.Scheme)
