@@ -18,7 +18,7 @@ spec:
     schema:
       openAPIV3Schema:
         description: EnvironmentTemplate is the Schema for the environmenttemplates
-          API
+          API.
         properties:
           apiVersion:
             description: |-
@@ -43,6 +43,10 @@ spec:
               components:
                 items:
                   properties:
+                    dependsOn:
+                      items:
+                        type: string
+                      type: array
                     helm:
                       properties:
                         chart:
@@ -76,6 +80,20 @@ spec:
                       type: object
                     name:
                       type: string
+                    readiness:
+                      properties:
+                        httpGet:
+                          properties:
+                            path:
+                              type: string
+                            port:
+                              format: int32
+                              type: integer
+                          required:
+                          - path
+                          - port
+                          type: object
+                      type: object
                   required:
                   - name
                   type: object

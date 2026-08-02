@@ -21,10 +21,13 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/nuromirg/petri/api/v1alpha1"
 	"github.com/nuromirg/petri/internal/deployer"
+	"github.com/nuromirg/petri/internal/graph"
 	"github.com/nuromirg/petri/internal/helpers"
+	"golang.org/x/sync/errgroup"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -43,16 +46,24 @@ const (
 
 	helmMaxReleaseNameLength = 53
 
+	requeueAfter     = 10 * time.Second
+	requeueImmediate = time.Second
+
 	nsPrefix = "petri-"
 )
 
 var ErrNamespaceNotManaged = errors.New("namespace not managed by Petri")
+
+type checker interface {
+	IsReady(ctx context.Context, namespace string, releaseName string, readiness *v1alpha1.ReadinessSpec) (bool, string, error)
+}
 
 // EphemeralEnvironmentReconciler reconciles a EphemeralEnvironment object.
 type EphemeralEnvironmentReconciler struct {
 	client.Client
 	Scheme   *runtime.Scheme
 	Deployer deployer.Deployer
+	Checker  checker
 }
 
 // +kubebuilder:rbac:groups=core.petri.run,resources=ephemeralenvironments,verbs=get;list;watch;create;update;patch;delete
@@ -60,6 +71,8 @@ type EphemeralEnvironmentReconciler struct {
 // +kubebuilder:rbac:groups=core.petri.run,resources=ephemeralenvironments/finalizers,verbs=update
 // +kubebuilder:rbac:groups=core.petri.run,resources=environmenttemplates,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;create;delete
+// +kubebuilder:rbac:groups=apps,resources=deployments;statefulsets,verbs=get;list;watch
+
 func (r *EphemeralEnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	_ = logf.FromContext(ctx)
 
@@ -88,52 +101,155 @@ func (r *EphemeralEnvironmentReconciler) reconcile(ctx context.Context, env *v1a
 		err = errors.Join(err, patcher.Patch(ctx, env))
 	}()
 
+	if env.Status.ObservedGeneration != env.Generation {
+		env.Status.Phase = ""
+
+		// we rely on helm idempotency here, so each non-equal scenario will do an acceptable install-or-upgrade with helm
+		env.Status.Components = nil
+		env.Status.ObservedGeneration = env.Generation
+	}
+
 	template, err := r.getEnvironmentTemplate(ctx, env)
 	if err != nil {
 		if apierrors.IsNotFound(err) {
-			return ctrl.Result{}, r.setFailed(ctx, env, "TemplateNotFound", "template "+env.Spec.Template+" not found")
+			return ctrl.Result{}, r.setFailed(env, "TemplateNotFound", "template "+env.Spec.Template+" not found")
 		}
 		return ctrl.Result{}, err
 	}
 
 	targetNs, err := r.targetNamespace(env)
 	if err != nil {
-		return ctrl.Result{}, r.setFailed(ctx, env, "InvalidConfiguration", err.Error())
+		return ctrl.Result{}, r.setFailed(env, "InvalidConfiguration", err.Error())
 	}
 
 	if err := r.createNamespace(ctx, targetNs); err != nil {
 		if errors.Is(err, ErrNamespaceNotManaged) {
-			return ctrl.Result{}, r.setFailed(ctx, env, "NamespaceNotManaged", err.Error())
+			return ctrl.Result{}, r.setFailed(env, "NamespaceNotManaged", err.Error())
 		}
 
 		return ctrl.Result{}, err
 	}
 
-	env.Status.Phase = v1alpha1.PhaseDeploying
-	// if err := r.Status().Update(ctx, env); err != nil {
-	// 	return ctrl.Result{}, err
-	// }
+	componentsByLevel, err := graph.BuildLevels(template.Spec.Components)
+	if err != nil {
+		return ctrl.Result{}, r.setFailed(env, "InvalidConfiguration", err.Error())
+	}
 
 	for _, component := range template.Spec.Components {
-		releaseName := env.Name + "-" + component.Name
-		if len(releaseName) > helmMaxReleaseNameLength {
-			return ctrl.Result{}, r.setFailed(ctx, env, "InvalidConfiguration", fmt.Sprintf("release name %q exceeds 53 characters", releaseName))
+		if releaseName := env.Name + "-" + component.Name; len(releaseName) > helmMaxReleaseNameLength {
+			return ctrl.Result{}, r.setFailed(env, "InvalidConfiguration",
+				fmt.Sprintf("release name %q exceeds %d characters", releaseName, helmMaxReleaseNameLength))
+		}
+	}
+
+	for _, cs := range env.Status.Components {
+		if cs.Phase == v1alpha1.PhaseFailed {
+			return ctrl.Result{}, r.setFailed(env, "ComponentFailed", cs.Name+" failed to deploy")
+		}
+	}
+
+	env.Status.Phase = v1alpha1.PhaseDeploying
+
+	phaseByName := make(map[string]v1alpha1.Phase, len(env.Status.Components))
+	for _, cs := range env.Status.Components {
+		phaseByName[cs.Name] = cs.Phase
+	}
+
+	for _, level := range componentsByLevel {
+		if allReady(level, phaseByName) {
+			continue
 		}
 
-		// TODO: design a dependsOn deploy ordering
-		if err := r.Deployer.Deploy(ctx, deployer.DeployOptions{
-			Namespace:   targetNs,
-			ReleaseName: env.Name + "-" + component.Name,
-			Component:   component,
-		}); err != nil {
-			return ctrl.Result{}, r.setFailed(ctx, env, "DeployFailed", err.Error())
-		}
+		return r.processLevel(ctx, env, targetNs, level, phaseByName)
 	}
 
 	// TODO also update the status.URL field with domain
 	env.Status.Phase = v1alpha1.PhaseReady
-	// return ctrl.Result{}, r.Status().Update(ctx, env)
 	return ctrl.Result{}, nil
+}
+
+func allReady(level []v1alpha1.ComponentSpec, phaseByName map[string]v1alpha1.Phase) bool {
+	for _, component := range level {
+		if phaseByName[component.Name] != v1alpha1.PhaseReady {
+			return false
+		}
+	}
+
+	return true
+}
+
+func (r *EphemeralEnvironmentReconciler) processLevel(ctx context.Context, env *v1alpha1.EphemeralEnvironment, targetNs string, level []v1alpha1.ComponentSpec, phaseByName map[string]v1alpha1.Phase) (ctrl.Result, error) {
+	needCheck := make([]v1alpha1.ComponentSpec, 0)
+	needDeploy := make([]v1alpha1.ComponentSpec, 0)
+
+	for _, component := range level {
+		phase := phaseByName[component.Name]
+		switch phase {
+		case v1alpha1.PhaseReady:
+			continue
+		case v1alpha1.PhaseDeploying:
+			needCheck = append(needCheck, component)
+		default:
+			needDeploy = append(needDeploy, component)
+		}
+	}
+
+	if len(needDeploy) > 0 {
+		g, gctx := errgroup.WithContext(ctx)
+		for _, component := range needDeploy {
+			g.Go(func() error {
+				return r.Deployer.Deploy(gctx, deployer.DeployOptions{
+					Namespace:   targetNs,
+					ReleaseName: env.Name + "-" + component.Name,
+					Component:   component,
+				})
+			})
+		}
+
+		if err := g.Wait(); err != nil {
+			for _, component := range needDeploy {
+				setComponentPhase(env, component.Name, v1alpha1.PhaseFailed)
+			}
+			return ctrl.Result{}, r.setFailed(env, "DeployFailed", err.Error())
+		}
+		for _, c := range needDeploy {
+			setComponentPhase(env, c.Name, v1alpha1.PhaseDeploying)
+		}
+
+		return ctrl.Result{RequeueAfter: requeueAfter}, nil
+	}
+
+	allDone := true
+	for _, component := range needCheck {
+		ready, _, err := r.Checker.IsReady(ctx, targetNs, env.Name+"-"+component.Name, component.Readiness)
+		if err != nil {
+			return ctrl.Result{}, err
+		}
+		if ready {
+			setComponentPhase(env, component.Name, v1alpha1.PhaseReady)
+		} else {
+			allDone = false
+		}
+	}
+
+	if allDone {
+		return ctrl.Result{RequeueAfter: requeueImmediate}, nil
+	}
+	return ctrl.Result{RequeueAfter: requeueAfter}, nil
+}
+
+func setComponentPhase(env *v1alpha1.EphemeralEnvironment, name string, phase v1alpha1.Phase) {
+	// make sure we change the value, not the slice copy
+	for i := range env.Status.Components {
+		if env.Status.Components[i].Name == name {
+			env.Status.Components[i].Phase = phase
+			return
+		}
+	}
+	env.Status.Components = append(env.Status.Components, v1alpha1.ComponentStatus{
+		Name:  name,
+		Phase: phase,
+	})
 }
 
 func (r *EphemeralEnvironmentReconciler) createNamespace(ctx context.Context, targetNs string) error {
@@ -161,7 +277,12 @@ func (r *EphemeralEnvironmentReconciler) createNamespace(ctx context.Context, ta
 	return r.Create(ctx, ns)
 }
 
-func (r *EphemeralEnvironmentReconciler) reconcileDelete(ctx context.Context, env *v1alpha1.EphemeralEnvironment) (ctrl.Result, error) {
+func (r *EphemeralEnvironmentReconciler) reconcileDelete(ctx context.Context, env *v1alpha1.EphemeralEnvironment) (res ctrl.Result, err error) {
+	patcher := helpers.NewStatusPatcher(r.Client, env)
+	defer func() {
+		err = errors.Join(err, patcher.Patch(ctx, env))
+	}()
+
 	log := logf.FromContext(ctx)
 
 	targetNs, err := r.targetNamespace(env)
@@ -177,9 +298,14 @@ func (r *EphemeralEnvironmentReconciler) reconcileDelete(ctx context.Context, en
 		return ctrl.Result{}, err
 	}
 
+	env.Status.Phase = v1alpha1.PhaseTerminating
+
 	if template != nil {
 		undeployErrs := make([]error, 0)
-		for _, component := range template.Spec.Components {
+		// tear down in reverse deploy order: dependents before their dependencies
+		components := template.Spec.Components
+		for i := len(components) - 1; i >= 0; i-- {
+			component := components[i]
 			if err := r.Deployer.Undeploy(ctx, deployer.DeployOptions{
 				Namespace:   targetNs,
 				ReleaseName: env.Name + "-" + component.Name,
@@ -253,8 +379,7 @@ func (r *EphemeralEnvironmentReconciler) SetupWithManager(mgr ctrl.Manager) erro
 		Complete(r)
 }
 
-func (r *EphemeralEnvironmentReconciler) setFailed(ctx context.Context, env *v1alpha1.EphemeralEnvironment, reason, message string) error {
-	_ = ctx
+func (r *EphemeralEnvironmentReconciler) setFailed(env *v1alpha1.EphemeralEnvironment, reason, message string) error {
 	meta.SetStatusCondition(&env.Status.Conditions, metav1.Condition{
 		Type:               "Ready",
 		Status:             metav1.ConditionFalse,
@@ -263,6 +388,5 @@ func (r *EphemeralEnvironmentReconciler) setFailed(ctx context.Context, env *v1a
 		ObservedGeneration: env.Generation,
 	})
 	env.Status.Phase = v1alpha1.PhaseFailed
-	// return r.Status().Update(ctx, env)
 	return nil
 }

@@ -39,8 +39,19 @@ type HelmGitRef struct {
 }
 
 type ComponentSpec struct {
-	Name string    `json:"name"`
-	Helm *HelmSpec `json:"helm,omitempty"`
+	Name      string         `json:"name"`
+	Helm      *HelmSpec      `json:"helm,omitempty"`
+	Readiness *ReadinessSpec `json:"readiness,omitempty"`
+	DependsOn []string       `json:"dependsOn,omitempty"`
+}
+
+type ReadinessSpec struct {
+	HTTPGet *HTTPGetAction `json:"httpGet,omitempty"`
+}
+
+type HTTPGetAction struct {
+	Path string `json:"path"`
+	Port int32  `json:"port"`
 }
 
 type IngressSpec struct {

@@ -17,7 +17,7 @@ spec:
   - name: v1alpha1
     schema:
       openAPIV3Schema:
-        description: SharedComponent is the Schema for the sharedcomponents API
+        description: SharedComponent is the Schema for the sharedcomponents API.
         properties:
           apiVersion:
             description: |-

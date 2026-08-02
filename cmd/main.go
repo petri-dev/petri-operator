@@ -24,6 +24,7 @@ import (
 	corev1alpha1 "github.com/nuromirg/petri/api/v1alpha1"
 	"github.com/nuromirg/petri/internal/controller"
 	"github.com/nuromirg/petri/internal/deployer"
+	"github.com/nuromirg/petri/internal/readiness"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
@@ -178,6 +179,7 @@ func main() {
 		Client:   mgr.GetClient(),
 		Scheme:   mgr.GetScheme(),
 		Deployer: deployer.NewHelmDeployer(mgr.GetConfig()),
+		Checker:  readiness.NewChecker(mgr.GetClient()),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "ephemeralenvironment")
 		os.Exit(1)

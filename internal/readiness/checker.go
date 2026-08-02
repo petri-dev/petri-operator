@@ -1,0 +1,98 @@
+package readiness
+
+import (
+	"context"
+	"fmt"
+	"net/http"
+	"time"
+
+	appsv1 "k8s.io/api/apps/v1"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	"github.com/nuromirg/petri/api/v1alpha1"
+)
+
+type Checker struct {
+	client     client.Client
+	httpClient *http.Client
+}
+
+func NewChecker(c client.Client) *Checker {
+	return &Checker{
+		client:     c,
+		httpClient: &http.Client{Timeout: 10 * time.Second},
+	}
+}
+
+func (c *Checker) IsReady(ctx context.Context, namespace string, releaseName string, readiness *v1alpha1.ReadinessSpec) (bool, string, error) {
+	var (
+		deployments  = &appsv1.DeploymentList{}
+		statefulSets = &appsv1.StatefulSetList{}
+	)
+
+	if err := c.client.List(ctx, deployments, client.InNamespace(namespace), client.MatchingLabels{
+		"app.kubernetes.io/instance": releaseName,
+	}); err != nil {
+		return false, "", err
+	}
+	if err := c.client.List(ctx, statefulSets, client.InNamespace(namespace), client.MatchingLabels{
+		"app.kubernetes.io/instance": releaseName,
+	}); err != nil {
+		return false, "", err
+	}
+
+	if len(deployments.Items) == 0 && len(statefulSets.Items) == 0 {
+		return false, "no workloads found for release " + releaseName, nil
+	}
+
+	for _, deployment := range deployments.Items {
+		var desired int32 = 1
+		if deployment.Spec.Replicas != nil {
+			desired = *deployment.Spec.Replicas
+		}
+
+		if deployment.Status.AvailableReplicas < desired {
+			return false, fmt.Sprintf("deployment %s: %d/%d replicas available", deployment.Name, deployment.Status.AvailableReplicas, desired), nil
+		}
+	}
+
+	for _, statefulSet := range statefulSets.Items {
+		var desired int32 = 1
+		if statefulSet.Spec.Replicas != nil {
+			desired = *statefulSet.Spec.Replicas
+		}
+
+		if statefulSet.Status.ReadyReplicas < desired {
+			return false, fmt.Sprintf("statefulSet %s: %d/%d replicas available", statefulSet.Name, statefulSet.Status.ReadyReplicas, desired), nil
+		}
+	}
+
+	if readiness == nil || readiness.HTTPGet == nil {
+		return true, "", nil
+	}
+
+	url := buildServiceURL(releaseName, namespace, readiness.HTTPGet.Port, readiness.HTTPGet.Path)
+	if err := c.check(url); err != nil {
+		return false, "http GET " + url + ": " + err.Error(), nil
+	}
+
+	return true, "", nil
+}
+
+func (c *Checker) check(url string) error {
+	resp, err := c.httpClient.Get(url)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 400 {
+		return fmt.Errorf("unexpected status: %d", resp.StatusCode)
+	}
+
+	return nil
+}
+
+func buildServiceURL(releaseName, namespace string, port int32, path string) string {
+	return fmt.Sprintf("http://%s.%s.svc.cluster.local:%d%s", releaseName, namespace, port, path)
+}
