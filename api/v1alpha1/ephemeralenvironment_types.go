@@ -49,6 +49,8 @@ type ComponentStatus struct {
 	Name   string `json:"name"`
 	Shared bool   `json:"shared"`
 	Phase  Phase  `json:"phase"`
+	// +optional
+	DeployRetries int32 `json:"deployRetries,omitempty"`
 }
 
 // EphemeralEnvironmentStatus defines the observed state of EphemeralEnvironment.

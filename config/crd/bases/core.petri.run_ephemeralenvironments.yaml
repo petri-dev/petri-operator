@@ -78,6 +78,9 @@ spec:
               components:
                 items:
                   properties:
+                    deployRetries:
+                      format: int32
+                      type: integer
                     name:
                       type: string
                     phase:

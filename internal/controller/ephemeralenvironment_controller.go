@@ -49,6 +49,8 @@ const (
 
 	requeueAfter     = 10 * time.Second
 	requeueImmediate = time.Second
+	maxDeployRetries = 5
+	maxDeployBackoff = 5 * time.Minute
 
 	nsPrefix = "petri-"
 
@@ -247,26 +249,45 @@ func (r *EphemeralEnvironmentReconciler) processLevel(ctx context.Context, env *
 		}
 		log.Info("deploying components", "components", names)
 
+		deployErrs := make([]error, len(needDeploy))
 		g, gctx := errgroup.WithContext(ctx)
-		for _, component := range needDeploy {
+		for i, component := range needDeploy {
 			g.Go(func() error {
-				return r.Deployer.Deploy(gctx, deployer.DeployOptions{
+				deployErrs[i] = r.Deployer.Deploy(gctx, deployer.DeployOptions{
 					Namespace:   targetNs,
 					ReleaseName: env.Name + "-" + component.Name,
 					Component:   component,
 				})
+				return nil
 			})
 		}
+		_ = g.Wait()
 
-		if err := g.Wait(); err != nil {
-			log.Error(err, "component deploy failed", "namespace", targetNs)
-			for _, component := range needDeploy {
-				setComponentPhase(env, component.Name, v1alpha1.PhaseFailed)
+		exhausted := false
+		stillRetrying := false
+		for i, component := range needDeploy {
+			if deployErrs[i] == nil {
+				setComponentPhase(env, component.Name, v1alpha1.PhaseDeploying)
+				setComponentRetries(env, component.Name, 0)
+				continue
 			}
-			return ctrl.Result{}, r.setFailed(env, "DeployFailed", err.Error())
+
+			retries := incrementRetries(env, component.Name)
+			if retries >= maxDeployRetries {
+				log.Error(deployErrs[i], "component deploy failed permanently", "component", component.Name, "retries", retries)
+				setComponentPhase(env, component.Name, v1alpha1.PhaseFailed)
+				exhausted = true
+			} else {
+				log.Info("component deploy failed, will retry", "component", component.Name, "retries", retries, "error", deployErrs[i].Error())
+				stillRetrying = true
+			}
 		}
-		for _, c := range needDeploy {
-			setComponentPhase(env, c.Name, v1alpha1.PhaseDeploying)
+
+		if exhausted {
+			return ctrl.Result{}, r.setFailed(env, "DeployFailed", "one or more components failed to deploy")
+		}
+		if stillRetrying {
+			return ctrl.Result{RequeueAfter: deployBackoff(env, needDeploy)}, nil
 		}
 
 		return ctrl.Result{RequeueAfter: requeueAfter}, nil
@@ -305,6 +326,48 @@ func setComponentPhase(env *v1alpha1.EphemeralEnvironment, name string, phase v1
 		Name:  name,
 		Phase: phase,
 	})
+}
+
+func incrementRetries(env *v1alpha1.EphemeralEnvironment, name string) int32 {
+	for i := range env.Status.Components {
+		if env.Status.Components[i].Name == name {
+			env.Status.Components[i].DeployRetries++
+			return env.Status.Components[i].DeployRetries
+		}
+	}
+	env.Status.Components = append(env.Status.Components, v1alpha1.ComponentStatus{
+		Name:          name,
+		DeployRetries: 1,
+	})
+	return 1
+}
+
+func setComponentRetries(env *v1alpha1.EphemeralEnvironment, name string, retries int32) {
+	for i := range env.Status.Components {
+		if env.Status.Components[i].Name == name {
+			env.Status.Components[i].DeployRetries = retries
+			return
+		}
+	}
+}
+
+func deployBackoff(env *v1alpha1.EphemeralEnvironment, components []v1alpha1.ComponentSpec) time.Duration {
+	var maxRetries int32
+	names := make(map[string]struct{}, len(components))
+	for _, c := range components {
+		names[c.Name] = struct{}{}
+	}
+	for _, cs := range env.Status.Components {
+		if _, ok := names[cs.Name]; ok && cs.DeployRetries > maxRetries {
+			maxRetries = cs.DeployRetries
+		}
+	}
+
+	backoff := requeueAfter << maxRetries
+	if backoff > maxDeployBackoff || backoff <= 0 {
+		return maxDeployBackoff
+	}
+	return backoff
 }
 
 func (r *EphemeralEnvironmentReconciler) createNamespace(ctx context.Context, targetNs string) error {
