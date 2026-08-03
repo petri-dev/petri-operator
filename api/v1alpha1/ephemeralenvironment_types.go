@@ -51,6 +51,8 @@ type ComponentStatus struct {
 	Phase  Phase  `json:"phase"`
 	// +optional
 	DeployRetries int32 `json:"deployRetries,omitempty"`
+	// +optional
+	DeployingSince *metav1.Time `json:"deployingSince,omitempty"`
 }
 
 // EphemeralEnvironmentStatus defines the observed state of EphemeralEnvironment.

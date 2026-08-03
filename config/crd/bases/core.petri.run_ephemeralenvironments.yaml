@@ -81,6 +81,9 @@ spec:
                     deployRetries:
                       format: int32
                       type: integer
+                    deployingSince:
+                      format: date-time
+                      type: string
                     name:
                       type: string
                     phase:

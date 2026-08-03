@@ -51,6 +51,8 @@ const (
 	requeueImmediate = time.Second
 	maxDeployRetries = 5
 	maxDeployBackoff = 5 * time.Minute
+	// TODO make them configurable
+	deployTimeout = 15 * time.Minute
 
 	nsPrefix = "petri-"
 
@@ -269,6 +271,7 @@ func (r *EphemeralEnvironmentReconciler) processLevel(ctx context.Context, env *
 			if deployErrs[i] == nil {
 				setComponentPhase(env, component.Name, v1alpha1.PhaseDeploying)
 				setComponentRetries(env, component.Name, 0)
+				setComponentDeployingSince(env, component.Name, metav1.Now())
 				continue
 			}
 
@@ -295,6 +298,14 @@ func (r *EphemeralEnvironmentReconciler) processLevel(ctx context.Context, env *
 
 	allDone := true
 	for _, component := range needCheck {
+		if since := componentDeployingSince(env, component.Name); since != nil {
+			if time.Since(since.Time) > deployTimeout {
+				log.Info("component readiness timed out", "component", component.Name, "timeout", deployTimeout, "elapsed", time.Since(since.Time).Round(time.Second))
+				setComponentPhase(env, component.Name, v1alpha1.PhaseFailed)
+				return ctrl.Result{}, r.setFailed(env, "ReadinessTimeout", fmt.Sprintf("%s did not become ready within %s", component.Name, deployTimeout))
+			}
+		}
+
 		ready, reason, err := r.Checker.IsReady(ctx, targetNs, env.Name+"-"+component.Name, component.Readiness)
 		if err != nil {
 			return ctrl.Result{}, err
@@ -349,6 +360,26 @@ func setComponentRetries(env *v1alpha1.EphemeralEnvironment, name string, retrie
 			return
 		}
 	}
+}
+
+func setComponentDeployingSince(env *v1alpha1.EphemeralEnvironment, name string, t metav1.Time) {
+	for i := range env.Status.Components {
+		if env.Status.Components[i].Name == name {
+			if env.Status.Components[i].DeployingSince == nil {
+				env.Status.Components[i].DeployingSince = &t
+			}
+			return
+		}
+	}
+}
+
+func componentDeployingSince(env *v1alpha1.EphemeralEnvironment, name string) *metav1.Time {
+	for i := range env.Status.Components {
+		if env.Status.Components[i].Name == name {
+			return env.Status.Components[i].DeployingSince
+		}
+	}
+	return nil
 }
 
 func deployBackoff(env *v1alpha1.EphemeralEnvironment, components []v1alpha1.ComponentSpec) time.Duration {

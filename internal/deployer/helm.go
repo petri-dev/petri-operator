@@ -10,6 +10,7 @@ import (
 	"helm.sh/helm/v3/pkg/cli"
 	"helm.sh/helm/v3/pkg/registry"
 	"helm.sh/helm/v3/pkg/storage/driver"
+	"helm.sh/helm/v3/pkg/strvals"
 	"k8s.io/cli-runtime/pkg/genericclioptions"
 	"k8s.io/client-go/rest"
 )
@@ -60,7 +61,9 @@ func (h *HelmDeployer) Deploy(ctx context.Context, opts DeployOptions) error {
 
 	values := make(map[string]any)
 	for k, v := range helmSpec.Values {
-		values[k] = v
+		if err := strvals.ParseInto(k+"="+v, values); err != nil {
+			return fmt.Errorf("parse value %q: %w", k, err)
+		}
 	}
 
 	history := action.NewHistory(cfg)

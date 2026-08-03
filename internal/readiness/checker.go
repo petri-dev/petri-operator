@@ -80,7 +80,11 @@ func (c *Checker) IsReady(ctx context.Context, namespace string, releaseName str
 	if len(services.Items) == 0 {
 		return false, "no service found for release " + releaseName, nil
 	}
-	serviceName := services.Items[0].Name
+
+	serviceName := findServiceByPort(services.Items, readiness.HTTPGet.Port)
+	if serviceName == "" {
+		return false, fmt.Sprintf("no service with port %d found for release %s", readiness.HTTPGet.Port, releaseName), nil
+	}
 
 	url := buildServiceURL(serviceName, namespace, readiness.HTTPGet.Port, readiness.HTTPGet.Path)
 	if err := c.check(ctx, url); err != nil {
@@ -111,4 +115,15 @@ func (c *Checker) check(ctx context.Context, url string) error {
 
 func buildServiceURL(releaseName, namespace string, port int32, path string) string {
 	return fmt.Sprintf("http://%s.%s.svc.cluster.local:%d%s", releaseName, namespace, port, path)
+}
+
+func findServiceByPort(services []corev1.Service, port int32) string {
+	for _, svc := range services {
+		for _, p := range svc.Spec.Ports {
+			if p.Port == port {
+				return svc.Name
+			}
+		}
+	}
+	return ""
 }
