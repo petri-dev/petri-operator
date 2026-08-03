@@ -6,11 +6,10 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/nuromirg/petri/api/v1alpha1"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-
-	"github.com/nuromirg/petri/api/v1alpha1"
 )
 
 type Checker struct {
@@ -84,15 +83,20 @@ func (c *Checker) IsReady(ctx context.Context, namespace string, releaseName str
 	serviceName := services.Items[0].Name
 
 	url := buildServiceURL(serviceName, namespace, readiness.HTTPGet.Port, readiness.HTTPGet.Path)
-	if err := c.check(url); err != nil {
-		return false, "http GET " + url + ": " + err.Error(), nil
+	if err := c.check(ctx, url); err != nil {
+		return false, "http GET " + url + ": " + err.Error(), nil //nolint:nilerr // probe failure is reported as not-ready, not as an error
 	}
 
 	return true, "", nil
 }
 
-func (c *Checker) check(url string) error {
-	resp, err := c.httpClient.Get(url)
+func (c *Checker) check(ctx context.Context, url string) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, http.NoBody)
+	if err != nil {
+		return err
+	}
+
+	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return err
 	}

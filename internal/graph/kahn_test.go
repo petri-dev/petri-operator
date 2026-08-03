@@ -1,7 +1,7 @@
 package graph_test
 
 import (
-	"sort"
+	"slices"
 	"testing"
 
 	"github.com/nuromirg/petri/api/v1alpha1"
@@ -19,7 +19,7 @@ func levelNames(levels [][]v1alpha1.ComponentSpec) [][]string {
 		for j, c := range level {
 			names[j] = c.Name
 		}
-		sort.Strings(names)
+		slices.Sort(names)
 		out[i] = names
 	}
 	return out
@@ -43,6 +43,8 @@ func equalLevels(a, b [][]string) bool {
 }
 
 func TestBuildLevels(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name       string
 		components []v1alpha1.ComponentSpec
@@ -118,6 +120,8 @@ func TestBuildLevels(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			levels, err := graph.BuildLevels(tt.components)
 
 			if tt.wantErr {
