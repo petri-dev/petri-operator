@@ -102,12 +102,16 @@ func (r *EphemeralEnvironmentReconciler) Reconcile(ctx context.Context, req ctrl
 }
 
 func (r *EphemeralEnvironmentReconciler) reconcile(ctx context.Context, env *v1alpha1.EphemeralEnvironment) (res ctrl.Result, err error) {
+	log := logf.FromContext(ctx)
+
 	patcher := helpers.NewStatusPatcher(r.Client, env)
 	defer func() {
 		err = errors.Join(err, patcher.Patch(ctx, env))
 	}()
 
 	if env.Status.ObservedGeneration != env.Generation {
+		log.Info("spec changed, resetting environment state",
+			"observedGeneration", env.Status.ObservedGeneration, "generation", env.Generation)
 		env.Status.Phase = ""
 
 		// we rely on helm idempotency here, so each non-equal scenario will do an acceptable install-or-upgrade with helm
@@ -161,8 +165,9 @@ func (r *EphemeralEnvironmentReconciler) reconcile(ctx context.Context, env *v1a
 		phaseByName[cs.Name] = cs.Phase
 	}
 
-	for _, level := range componentsByLevel {
+	for i, level := range componentsByLevel {
 		if allReady(level, phaseByName) {
+			log.V(1).Info("level already ready, advancing", "level", i)
 			continue
 		}
 
@@ -170,6 +175,9 @@ func (r *EphemeralEnvironmentReconciler) reconcile(ctx context.Context, env *v1a
 	}
 
 	// TODO also update the status.URL field with domain
+	if env.Status.Phase != v1alpha1.PhaseReady {
+		log.Info("environment ready", "components", len(env.Status.Components))
+	}
 	env.Status.Phase = v1alpha1.PhaseReady
 	return ctrl.Result{}, nil
 }
@@ -213,6 +221,8 @@ func allReady(level []v1alpha1.ComponentSpec, phaseByName map[string]v1alpha1.Ph
 }
 
 func (r *EphemeralEnvironmentReconciler) processLevel(ctx context.Context, env *v1alpha1.EphemeralEnvironment, targetNs string, level []v1alpha1.ComponentSpec, phaseByName map[string]v1alpha1.Phase) (ctrl.Result, error) {
+	log := logf.FromContext(ctx)
+
 	needCheck := make([]v1alpha1.ComponentSpec, 0)
 	needDeploy := make([]v1alpha1.ComponentSpec, 0)
 
@@ -228,7 +238,15 @@ func (r *EphemeralEnvironmentReconciler) processLevel(ctx context.Context, env *
 		}
 	}
 
+	log.V(1).Info("processing frontier", "needDeploy", len(needDeploy), "needCheck", len(needCheck))
+
 	if len(needDeploy) > 0 {
+		names := make([]string, len(needDeploy))
+		for i, c := range needDeploy {
+			names[i] = c.Name
+		}
+		log.Info("deploying components", "components", names)
+
 		g, gctx := errgroup.WithContext(ctx)
 		for _, component := range needDeploy {
 			g.Go(func() error {
@@ -241,6 +259,7 @@ func (r *EphemeralEnvironmentReconciler) processLevel(ctx context.Context, env *
 		}
 
 		if err := g.Wait(); err != nil {
+			log.Error(err, "component deploy failed", "namespace", targetNs)
 			for _, component := range needDeploy {
 				setComponentPhase(env, component.Name, v1alpha1.PhaseFailed)
 			}
@@ -255,13 +274,15 @@ func (r *EphemeralEnvironmentReconciler) processLevel(ctx context.Context, env *
 
 	allDone := true
 	for _, component := range needCheck {
-		ready, _, err := r.Checker.IsReady(ctx, targetNs, env.Name+"-"+component.Name, component.Readiness)
+		ready, reason, err := r.Checker.IsReady(ctx, targetNs, env.Name+"-"+component.Name, component.Readiness)
 		if err != nil {
 			return ctrl.Result{}, err
 		}
 		if ready {
+			log.Info("component ready", "component", component.Name)
 			setComponentPhase(env, component.Name, v1alpha1.PhaseReady)
 		} else {
+			log.Info("component not ready", "component", component.Name, "reason", reason)
 			allDone = false
 		}
 	}
@@ -341,6 +362,9 @@ func (r *EphemeralEnvironmentReconciler) reconcileDelete(ctx context.Context, en
 		return ctrl.Result{}, err
 	}
 
+	if env.Status.Phase != v1alpha1.PhaseTerminating {
+		log.Info("tearing down environment", "namespace", targetNs)
+	}
 	env.Status.Phase = v1alpha1.PhaseTerminating
 
 	if template != nil {
@@ -349,6 +373,7 @@ func (r *EphemeralEnvironmentReconciler) reconcileDelete(ctx context.Context, en
 		components := template.Spec.Components
 		for i := len(components) - 1; i >= 0; i-- {
 			component := components[i]
+			log.V(1).Info("undeploying component", "component", component.Name)
 			if err := r.Deployer.Undeploy(ctx, deployer.DeployOptions{
 				Namespace:   targetNs,
 				ReleaseName: env.Name + "-" + component.Name,
@@ -430,6 +455,10 @@ func (r *EphemeralEnvironmentReconciler) setFailed(env *v1alpha1.EphemeralEnviro
 		Message:            message,
 		ObservedGeneration: env.Generation,
 	})
+	if env.Status.Phase != v1alpha1.PhaseFailed {
+		logf.Log.WithName("ephemeralenvironment").Info("environment failed",
+			"name", env.Name, "reason", reason, "message", message)
+	}
 	env.Status.Phase = v1alpha1.PhaseFailed
 	return nil
 }
