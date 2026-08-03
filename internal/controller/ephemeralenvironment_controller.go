@@ -29,6 +29,7 @@ import (
 	"github.com/nuromirg/petri/internal/helpers"
 	"golang.org/x/sync/errgroup"
 	corev1 "k8s.io/api/core/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -50,6 +51,8 @@ const (
 	requeueImmediate = time.Second
 
 	nsPrefix = "petri-"
+
+	deployerRoleBinding = "petri-deployer"
 )
 
 var ErrNamespaceNotManaged = errors.New("namespace not managed by Petri")
@@ -70,8 +73,11 @@ type EphemeralEnvironmentReconciler struct {
 // +kubebuilder:rbac:groups=core.petri.run,resources=ephemeralenvironments/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=core.petri.run,resources=ephemeralenvironments/finalizers,verbs=update
 // +kubebuilder:rbac:groups=core.petri.run,resources=environmenttemplates,verbs=get;list;watch
-// +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;create;delete
+// +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;list;watch;create;delete
 // +kubebuilder:rbac:groups=apps,resources=deployments;statefulsets,verbs=get;list;watch
+// +kubebuilder:rbac:groups="",resources=services,verbs=get;list;watch
+// +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=rolebindings,verbs=get;list;watch;create;delete
+// +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=clusterroles,verbs=bind,resourceNames=admin
 
 func (r *EphemeralEnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	_ = logf.FromContext(ctx)
@@ -168,6 +174,34 @@ func (r *EphemeralEnvironmentReconciler) reconcile(ctx context.Context, env *v1a
 	return ctrl.Result{}, nil
 }
 
+func (r *EphemeralEnvironmentReconciler) ensureDeployerRoleBinding(ctx context.Context, targetNs string) error {
+	rb := &rbacv1.RoleBinding{}
+	err := r.Get(ctx, client.ObjectKey{Namespace: targetNs, Name: deployerRoleBinding}, rb)
+	if err == nil {
+		return nil
+	}
+
+	if !apierrors.IsNotFound(err) {
+		return err
+	}
+
+	rb = &rbacv1.RoleBinding{
+		ObjectMeta: metav1.ObjectMeta{Name: deployerRoleBinding, Namespace: targetNs},
+		RoleRef: rbacv1.RoleRef{
+			APIGroup: rbacv1.GroupName,
+			Kind:     "ClusterRole",
+			Name:     "admin",
+		},
+		Subjects: []rbacv1.Subject{{
+			Kind:      rbacv1.ServiceAccountKind,
+			Name:      "petri-controller-manager",
+			Namespace: "petri-system",
+		}},
+	}
+
+	return r.Create(ctx, rb)
+}
+
 func allReady(level []v1alpha1.ComponentSpec, phaseByName map[string]v1alpha1.Phase) bool {
 	for _, component := range level {
 		if phaseByName[component.Name] != v1alpha1.PhaseReady {
@@ -259,7 +293,7 @@ func (r *EphemeralEnvironmentReconciler) createNamespace(ctx context.Context, ta
 		if _, managed := ns.Labels[managedLabel]; !managed {
 			return fmt.Errorf("%w: %q", ErrNamespaceNotManaged, targetNs)
 		}
-		return nil
+		return r.ensureDeployerRoleBinding(ctx, targetNs)
 	}
 	if !apierrors.IsNotFound(err) {
 		return err
@@ -274,7 +308,12 @@ func (r *EphemeralEnvironmentReconciler) createNamespace(ctx context.Context, ta
 		},
 	}
 
-	return r.Create(ctx, ns)
+	err = r.Create(ctx, ns)
+	if err != nil {
+		return fmt.Errorf("failed to create a namespace: %w", err)
+	}
+
+	return r.ensureDeployerRoleBinding(ctx, targetNs)
 }
 
 func (r *EphemeralEnvironmentReconciler) reconcileDelete(ctx context.Context, env *v1alpha1.EphemeralEnvironment) (res ctrl.Result, err error) {
@@ -295,6 +334,10 @@ func (r *EphemeralEnvironmentReconciler) reconcileDelete(ctx context.Context, en
 
 	template, err := r.getEnvironmentTemplate(ctx, env)
 	if err != nil && !apierrors.IsNotFound(err) {
+		return ctrl.Result{}, err
+	}
+
+	if err := r.ensureDeployerRoleBinding(ctx, targetNs); err != nil && !apierrors.IsNotFound(err) {
 		return ctrl.Result{}, err
 	}
 

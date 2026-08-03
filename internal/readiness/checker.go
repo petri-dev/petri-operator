@@ -7,6 +7,7 @@ import (
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/nuromirg/petri/api/v1alpha1"
@@ -71,7 +72,18 @@ func (c *Checker) IsReady(ctx context.Context, namespace string, releaseName str
 		return true, "", nil
 	}
 
-	url := buildServiceURL(releaseName, namespace, readiness.HTTPGet.Port, readiness.HTTPGet.Path)
+	services := &corev1.ServiceList{}
+	if err := c.client.List(ctx, services, client.InNamespace(namespace), client.MatchingLabels{"app.kubernetes.io/instance": releaseName}); err != nil {
+		return false, "", err
+	}
+
+	// TODO consider to iterate and find first result with non-empty readiness.httpget.port
+	if len(services.Items) == 0 {
+		return false, "no service found for release " + releaseName, nil
+	}
+	serviceName := services.Items[0].Name
+
+	url := buildServiceURL(serviceName, namespace, readiness.HTTPGet.Port, readiness.HTTPGet.Path)
 	if err := c.check(url); err != nil {
 		return false, "http GET " + url + ": " + err.Error(), nil
 	}
