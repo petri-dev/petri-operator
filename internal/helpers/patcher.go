@@ -31,5 +31,5 @@ func (p *StatusPatcher[T]) Patch(ctx context.Context, obj T) error {
 		return nil
 	}
 
-	return p.client.Status().Patch(ctx, obj, client.MergeFrom(p.original))
+	return client.IgnoreNotFound(p.client.Status().Patch(ctx, obj, client.MergeFrom(p.original)))
 }

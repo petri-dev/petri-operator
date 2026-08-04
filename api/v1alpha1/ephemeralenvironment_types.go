@@ -45,6 +45,16 @@ type SourceSpec struct {
 	SHA    string `json:"sha,omitempty"`
 }
 
+type ComponentStatus struct {
+	Name   string `json:"name"`
+	Shared bool   `json:"shared"`
+	Phase  Phase  `json:"phase"`
+	// +optional
+	DeployRetries int32 `json:"deployRetries,omitempty"`
+	// +optional
+	DeployingSince *metav1.Time `json:"deployingSince,omitempty"`
+}
+
 // EphemeralEnvironmentStatus defines the observed state of EphemeralEnvironment.
 type EphemeralEnvironmentStatus struct {
 	// +listType=map
@@ -57,6 +67,15 @@ type EphemeralEnvironmentStatus struct {
 
 	URL       string       `json:"url,omitempty"`
 	ExpiresAt *metav1.Time `json:"expiresAt,omitempty"`
+
+	// +listType=map
+	// +listMapKey=name
+	// +optional
+	Components []ComponentStatus `json:"components,omitempty"`
+
+	// observedGeneration is the generation of the spec that produced this status.
+	// +optional
+	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
 }
 
 // +kubebuilder:object:root=true
