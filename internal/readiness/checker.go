@@ -30,6 +30,7 @@ func (c *Checker) IsReady(ctx context.Context, namespace string, releaseName str
 		statefulSets = &appsv1.StatefulSetList{}
 	)
 
+	// TODO we rely on helm for this label for now, but later on we should implement action.Get().
 	if err := c.client.List(ctx, deployments, client.InNamespace(namespace), client.MatchingLabels{
 		"app.kubernetes.io/instance": releaseName,
 	}); err != nil {

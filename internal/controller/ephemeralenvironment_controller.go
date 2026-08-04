@@ -51,7 +51,7 @@ const (
 	requeueImmediate = time.Second
 	maxDeployRetries = 5
 	maxDeployBackoff = 5 * time.Minute
-	// TODO make them configurable
+	// TODO make them configurable.
 	deployTimeout = 15 * time.Minute
 
 	nsPrefix = "petri-"
