@@ -27,7 +27,6 @@ import (
 	"github.com/nuromirg/petri/internal/deployer"
 	"github.com/nuromirg/petri/internal/graph"
 	"github.com/nuromirg/petri/internal/helpers"
-	"golang.org/x/sync/errgroup"
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -51,8 +50,11 @@ const (
 	requeueImmediate = time.Second
 	maxDeployRetries = 5
 	maxDeployBackoff = 5 * time.Minute
-	// TODO make them configurable.
+	// TODO make them configurable through EphemeralEnvironment.Spec.TTL
 	deployTimeout = 15 * time.Minute
+	// deployConcurrency bounds how many deploy/undeploy Jobs are submitted or
+	// observed at once, per level.
+	deployConcurrency = 4
 
 	nsPrefix = "petri-"
 
@@ -84,8 +86,6 @@ type EphemeralEnvironmentReconciler struct {
 // +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=clusterroles,verbs=bind,resourceNames=admin
 
 func (r *EphemeralEnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	_ = logf.FromContext(ctx)
-
 	env := new(v1alpha1.EphemeralEnvironment)
 
 	if err := r.Get(ctx, req.NamespacedName, env); err != nil {
@@ -186,6 +186,63 @@ func (r *EphemeralEnvironmentReconciler) reconcile(ctx context.Context, env *v1a
 	return ctrl.Result{}, nil
 }
 
+func (r *EphemeralEnvironmentReconciler) reconcileDelete(ctx context.Context, env *v1alpha1.EphemeralEnvironment) (res ctrl.Result, err error) {
+	patcher := helpers.NewStatusPatcher(r.Client, env)
+	defer func() {
+		err = errors.Join(err, patcher.Patch(ctx, env))
+	}()
+
+	log := logf.FromContext(ctx)
+
+	targetNs, err := r.targetNamespace(env)
+	if err != nil {
+		log.Error(err, "invalid namespace during deletion, skipping cleanup")
+		return ctrl.Result{}, r.removeFinalizer(ctx, env)
+	}
+
+	template, err := r.getEnvironmentTemplate(ctx, env)
+	if err != nil && !apierrors.IsNotFound(err) {
+		return ctrl.Result{}, err
+	}
+
+	if err := r.ensureDeployerRoleBinding(ctx, targetNs); err != nil && !apierrors.IsNotFound(err) {
+		return ctrl.Result{}, err
+	}
+
+	if env.Status.Phase != v1alpha1.PhaseTerminating {
+		log.Info("tearing down environment", "namespace", targetNs)
+	}
+	env.Status.Phase = v1alpha1.PhaseTerminating
+
+	if template != nil {
+		done, res, err := r.undeployAll(ctx, env, targetNs, template.Spec.Components)
+		if err != nil {
+			return ctrl.Result{}, err
+		}
+		if !done {
+			return res, nil
+		}
+	}
+
+	ns := &corev1.Namespace{}
+	err = r.Get(ctx, client.ObjectKey{Name: targetNs}, ns)
+	if err != nil && !apierrors.IsNotFound(err) {
+		return ctrl.Result{}, err
+	}
+
+	if err == nil {
+		if _, managed := ns.Labels[managedLabel]; !managed {
+			log.Info("namespace not managed by Petri, skipping cleanup", "namespace", targetNs)
+			return ctrl.Result{}, r.removeFinalizer(ctx, env)
+		}
+		if err := r.deleteNamespace(ctx, targetNs); err != nil {
+			return ctrl.Result{}, err
+		}
+	}
+
+	return ctrl.Result{}, r.removeFinalizer(ctx, env)
+}
+
 func (r *EphemeralEnvironmentReconciler) ensureDeployerRoleBinding(ctx context.Context, targetNs string) error {
 	rb := &rbacv1.RoleBinding{}
 	err := r.Get(ctx, client.ObjectKey{Namespace: targetNs, Name: deployerRoleBinding}, rb)
@@ -212,193 +269,6 @@ func (r *EphemeralEnvironmentReconciler) ensureDeployerRoleBinding(ctx context.C
 	}
 
 	return r.Create(ctx, rb)
-}
-
-func allReady(level []v1alpha1.ComponentSpec, phaseByName map[string]v1alpha1.Phase) bool {
-	for _, component := range level {
-		if phaseByName[component.Name] != v1alpha1.PhaseReady {
-			return false
-		}
-	}
-
-	return true
-}
-
-func (r *EphemeralEnvironmentReconciler) processLevel(ctx context.Context, env *v1alpha1.EphemeralEnvironment, targetNs string, level []v1alpha1.ComponentSpec, phaseByName map[string]v1alpha1.Phase) (ctrl.Result, error) {
-	log := logf.FromContext(ctx)
-
-	needCheck := make([]v1alpha1.ComponentSpec, 0)
-	needDeploy := make([]v1alpha1.ComponentSpec, 0)
-
-	for _, component := range level {
-		phase := phaseByName[component.Name]
-		switch phase {
-		case v1alpha1.PhaseReady:
-			continue
-		case v1alpha1.PhaseDeploying:
-			needCheck = append(needCheck, component)
-		default:
-			needDeploy = append(needDeploy, component)
-		}
-	}
-
-	log.V(1).Info("processing frontier", "needDeploy", len(needDeploy), "needCheck", len(needCheck))
-
-	if len(needDeploy) > 0 {
-		names := make([]string, len(needDeploy))
-		for i, c := range needDeploy {
-			names[i] = c.Name
-		}
-		log.Info("deploying components", "components", names)
-
-		deployErrs := make([]error, len(needDeploy))
-		g, gctx := errgroup.WithContext(ctx)
-		for i, component := range needDeploy {
-			g.Go(func() error {
-				deployErrs[i] = r.Deployer.Deploy(gctx, deployer.DeployOptions{
-					Namespace:   targetNs,
-					ReleaseName: env.Name + "-" + component.Name,
-					Component:   component,
-				})
-				return nil
-			})
-		}
-		_ = g.Wait()
-
-		exhausted := false
-		stillRetrying := false
-		for i, component := range needDeploy {
-			if deployErrs[i] == nil {
-				setComponentPhase(env, component.Name, v1alpha1.PhaseDeploying)
-				setComponentRetries(env, component.Name, 0)
-				setComponentDeployingSince(env, component.Name, metav1.Now())
-				continue
-			}
-
-			retries := incrementRetries(env, component.Name)
-			if retries >= maxDeployRetries {
-				log.Error(deployErrs[i], "component deploy failed permanently", "component", component.Name, "retries", retries)
-				setComponentPhase(env, component.Name, v1alpha1.PhaseFailed)
-				exhausted = true
-			} else {
-				log.Info("component deploy failed, will retry", "component", component.Name, "retries", retries, "error", deployErrs[i].Error())
-				stillRetrying = true
-			}
-		}
-
-		if exhausted {
-			return ctrl.Result{}, r.setFailed(env, "DeployFailed", "one or more components failed to deploy")
-		}
-		if stillRetrying {
-			return ctrl.Result{RequeueAfter: deployBackoff(env, needDeploy)}, nil
-		}
-
-		return ctrl.Result{RequeueAfter: requeueAfter}, nil
-	}
-
-	allDone := true
-	for _, component := range needCheck {
-		if since := componentDeployingSince(env, component.Name); since != nil {
-			if time.Since(since.Time) > deployTimeout {
-				log.Info("component readiness timed out", "component", component.Name, "timeout", deployTimeout, "elapsed", time.Since(since.Time).Round(time.Second))
-				setComponentPhase(env, component.Name, v1alpha1.PhaseFailed)
-				return ctrl.Result{}, r.setFailed(env, "ReadinessTimeout", fmt.Sprintf("%s did not become ready within %s", component.Name, deployTimeout))
-			}
-		}
-
-		ready, reason, err := r.Checker.IsReady(ctx, targetNs, env.Name+"-"+component.Name, component.Readiness)
-		if err != nil {
-			return ctrl.Result{}, err
-		}
-		if ready {
-			log.Info("component ready", "component", component.Name)
-			setComponentPhase(env, component.Name, v1alpha1.PhaseReady)
-		} else {
-			log.Info("component not ready", "component", component.Name, "reason", reason)
-			allDone = false
-		}
-	}
-
-	if allDone {
-		return ctrl.Result{RequeueAfter: requeueImmediate}, nil
-	}
-	return ctrl.Result{RequeueAfter: requeueAfter}, nil
-}
-
-func setComponentPhase(env *v1alpha1.EphemeralEnvironment, name string, phase v1alpha1.Phase) {
-	// make sure we change the value, not the slice copy
-	for i := range env.Status.Components {
-		if env.Status.Components[i].Name == name {
-			env.Status.Components[i].Phase = phase
-			return
-		}
-	}
-	env.Status.Components = append(env.Status.Components, v1alpha1.ComponentStatus{
-		Name:  name,
-		Phase: phase,
-	})
-}
-
-func incrementRetries(env *v1alpha1.EphemeralEnvironment, name string) int32 {
-	for i := range env.Status.Components {
-		if env.Status.Components[i].Name == name {
-			env.Status.Components[i].DeployRetries++
-			return env.Status.Components[i].DeployRetries
-		}
-	}
-	env.Status.Components = append(env.Status.Components, v1alpha1.ComponentStatus{
-		Name:          name,
-		DeployRetries: 1,
-	})
-	return 1
-}
-
-func setComponentRetries(env *v1alpha1.EphemeralEnvironment, name string, retries int32) {
-	for i := range env.Status.Components {
-		if env.Status.Components[i].Name == name {
-			env.Status.Components[i].DeployRetries = retries
-			return
-		}
-	}
-}
-
-func setComponentDeployingSince(env *v1alpha1.EphemeralEnvironment, name string, t metav1.Time) {
-	for i := range env.Status.Components {
-		if env.Status.Components[i].Name == name {
-			if env.Status.Components[i].DeployingSince == nil {
-				env.Status.Components[i].DeployingSince = &t
-			}
-			return
-		}
-	}
-}
-
-func componentDeployingSince(env *v1alpha1.EphemeralEnvironment, name string) *metav1.Time {
-	for i := range env.Status.Components {
-		if env.Status.Components[i].Name == name {
-			return env.Status.Components[i].DeployingSince
-		}
-	}
-	return nil
-}
-
-func deployBackoff(env *v1alpha1.EphemeralEnvironment, components []v1alpha1.ComponentSpec) time.Duration {
-	var maxRetries int32
-	names := make(map[string]struct{}, len(components))
-	for _, c := range components {
-		names[c.Name] = struct{}{}
-	}
-	for _, cs := range env.Status.Components {
-		if _, ok := names[cs.Name]; ok && cs.DeployRetries > maxRetries {
-			maxRetries = cs.DeployRetries
-		}
-	}
-
-	backoff := requeueAfter << maxRetries
-	if backoff > maxDeployBackoff || backoff <= 0 {
-		return maxDeployBackoff
-	}
-	return backoff
 }
 
 func (r *EphemeralEnvironmentReconciler) createNamespace(ctx context.Context, targetNs string) error {
@@ -431,81 +301,6 @@ func (r *EphemeralEnvironmentReconciler) createNamespace(ctx context.Context, ta
 	return r.ensureDeployerRoleBinding(ctx, targetNs)
 }
 
-func (r *EphemeralEnvironmentReconciler) reconcileDelete(ctx context.Context, env *v1alpha1.EphemeralEnvironment) (res ctrl.Result, err error) {
-	patcher := helpers.NewStatusPatcher(r.Client, env)
-	defer func() {
-		err = errors.Join(err, patcher.Patch(ctx, env))
-	}()
-
-	log := logf.FromContext(ctx)
-
-	targetNs, err := r.targetNamespace(env)
-	if err != nil {
-		log.Error(err, "invalid namespace during deletion, skipping cleanup")
-		patch := client.MergeFrom(env.DeepCopy())
-		controllerutil.RemoveFinalizer(env, finalizer)
-		return ctrl.Result{}, r.Patch(ctx, env, patch)
-	}
-
-	template, err := r.getEnvironmentTemplate(ctx, env)
-	if err != nil && !apierrors.IsNotFound(err) {
-		return ctrl.Result{}, err
-	}
-
-	if err := r.ensureDeployerRoleBinding(ctx, targetNs); err != nil && !apierrors.IsNotFound(err) {
-		return ctrl.Result{}, err
-	}
-
-	if env.Status.Phase != v1alpha1.PhaseTerminating {
-		log.Info("tearing down environment", "namespace", targetNs)
-	}
-	env.Status.Phase = v1alpha1.PhaseTerminating
-
-	if template != nil {
-		undeployErrs := make([]error, 0)
-		// tear down in reverse deploy order: dependents before their dependencies
-		components := template.Spec.Components
-		for i := len(components) - 1; i >= 0; i-- {
-			component := components[i]
-			log.V(1).Info("undeploying component", "component", component.Name)
-			if err := r.Deployer.Undeploy(ctx, deployer.DeployOptions{
-				Namespace:   targetNs,
-				ReleaseName: env.Name + "-" + component.Name,
-				Component:   component,
-			}); err != nil {
-				log.Error(err, "failed to undeploy component", "component", component.Name)
-				undeployErrs = append(undeployErrs, err)
-			}
-		}
-
-		if len(undeployErrs) > 0 {
-			return ctrl.Result{}, errors.Join(undeployErrs...)
-		}
-	}
-
-	ns := &corev1.Namespace{}
-	err = r.Get(ctx, client.ObjectKey{Name: targetNs}, ns)
-	if err != nil && !apierrors.IsNotFound(err) {
-		return ctrl.Result{}, err
-	}
-
-	if err == nil {
-		if _, managed := ns.Labels[managedLabel]; !managed {
-			log.Info("namespace not managed by Petri, skipping cleanup", "namespace", targetNs)
-			patch := client.MergeFrom(env.DeepCopy())
-			controllerutil.RemoveFinalizer(env, finalizer)
-			return ctrl.Result{}, r.Patch(ctx, env, patch)
-		}
-		if err := r.deleteNamespace(ctx, targetNs); err != nil {
-			return ctrl.Result{}, err
-		}
-	}
-
-	patch := client.MergeFrom(env.DeepCopy())
-	controllerutil.RemoveFinalizer(env, finalizer)
-	return ctrl.Result{}, r.Patch(ctx, env, patch)
-}
-
 func (r *EphemeralEnvironmentReconciler) getEnvironmentTemplate(ctx context.Context, env *v1alpha1.EphemeralEnvironment) (*v1alpha1.EnvironmentTemplate, error) {
 	template := new(v1alpha1.EnvironmentTemplate)
 	if err := r.Get(ctx, client.ObjectKey{Name: env.Spec.Template, Namespace: env.Namespace}, template); err != nil {
@@ -532,6 +327,12 @@ func (r *EphemeralEnvironmentReconciler) deleteNamespace(ctx context.Context, na
 	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: name}}
 	err := r.Delete(ctx, ns)
 	return client.IgnoreNotFound(err)
+}
+
+func (r *EphemeralEnvironmentReconciler) removeFinalizer(ctx context.Context, env *v1alpha1.EphemeralEnvironment) error {
+	patch := client.MergeFrom(env.DeepCopy())
+	controllerutil.RemoveFinalizer(env, finalizer)
+	return r.Patch(ctx, env, patch)
 }
 
 func (r *EphemeralEnvironmentReconciler) SetupWithManager(mgr ctrl.Manager) error {

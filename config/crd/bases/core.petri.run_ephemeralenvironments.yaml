@@ -84,6 +84,8 @@ spec:
                     deployingSince:
                       format: date-time
                       type: string
+                    lastFailureReason:
+                      type: string
                     name:
                       type: string
                     phase:

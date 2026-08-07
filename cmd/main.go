@@ -17,9 +17,11 @@ limitations under the License.
 package main
 
 import (
+	"cmp"
 	"crypto/tls"
 	"flag"
 	"os"
+	"time"
 
 	corev1alpha1 "github.com/nuromirg/petri/api/v1alpha1"
 	"github.com/nuromirg/petri/internal/controller"
@@ -176,10 +178,16 @@ func main() {
 	}
 
 	if err := (&controller.EphemeralEnvironmentReconciler{
-		Client:   mgr.GetClient(),
-		Scheme:   mgr.GetScheme(),
-		Deployer: deployer.NewHelmDeployer(mgr.GetConfig()),
-		Checker:  readiness.NewChecker(mgr.GetClient()),
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+		Deployer: &deployer.JobDeployer{
+			Client:         mgr.GetClient(),
+			Image:          os.Getenv("PETRI_DEPLOYER_IMAGE"),
+			ServiceAccount: cmp.Or(os.Getenv("PETRI_DEPLOYER_SA"), "petri-deployer"),
+			// TODO hardcoded, wire to a CRD timeout field in the future
+			Deadline: 15 * time.Minute,
+		},
+		Checker: readiness.NewChecker(mgr.GetClient()),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "ephemeralenvironment")
 		os.Exit(1)

@@ -6,9 +6,41 @@ import (
 	"github.com/nuromirg/petri/api/v1alpha1"
 )
 
+type JobPhase string
+
+const (
+	PendingJobPhase   JobPhase = "Pending"
+	RunningJobPhase   JobPhase = "Running"
+	SucceededJobPhase JobPhase = "Succeeded"
+	FailedJobPhase    JobPhase = "Failed"
+)
+
+const (
+	EnvOp   = "PETRI_OP"
+	EnvSpec = "PETRI_SPEC"
+
+	OpDeploy   = "deploy"
+	OpUndeploy = "undeploy"
+)
+
+type Undeploy interface {
+	SubmitUndeploy(ctx context.Context, opts DeployOptions) error
+	ObserveUndeploy(ctx context.Context, opts DeployOptions) (JobState, error)
+}
+
+type Deploy interface {
+	Submit(ctx context.Context, opts DeployOptions) error
+	Observe(ctx context.Context, opts DeployOptions) (JobState, error)
+}
+
 type Deployer interface {
-	Deploy(ctx context.Context, opts DeployOptions) error
-	Undeploy(ctx context.Context, opts DeployOptions) error
+	Deploy
+	Undeploy
+}
+
+type JobState struct {
+	Phase  JobPhase
+	Reason string
 }
 
 type DeployOptions struct {

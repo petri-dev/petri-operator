@@ -12,23 +12,14 @@ import (
 	"helm.sh/helm/v3/pkg/storage/driver"
 	"helm.sh/helm/v3/pkg/strvals"
 	"k8s.io/cli-runtime/pkg/genericclioptions"
-	"k8s.io/client-go/rest"
 )
 
-type HelmDeployer struct {
-	restConfig *rest.Config
-}
-
-func NewHelmDeployer(restConfig *rest.Config) *HelmDeployer {
-	return &HelmDeployer{restConfig: restConfig}
-}
-
-func (h *HelmDeployer) Deploy(ctx context.Context, opts DeployOptions) error {
+func Install(ctx context.Context, opts DeployOptions) error {
 	if opts.Component.Helm == nil {
 		return fmt.Errorf("component %s has no helm spec", opts.Component.Name)
 	}
 
-	cfg, err := h.initActionConfig(opts.Namespace)
+	cfg, err := initActionConfig(opts.Namespace)
 	if err != nil {
 		return err
 	}
@@ -93,8 +84,8 @@ func (h *HelmDeployer) Deploy(ctx context.Context, opts DeployOptions) error {
 	return nil
 }
 
-func (h *HelmDeployer) Undeploy(ctx context.Context, opts DeployOptions) error {
-	cfg, err := h.initActionConfig(opts.Namespace)
+func Uninstall(ctx context.Context, opts DeployOptions) error {
+	cfg, err := initActionConfig(opts.Namespace)
 	if err != nil {
 		return err
 	}
@@ -109,15 +100,12 @@ func (h *HelmDeployer) Undeploy(ctx context.Context, opts DeployOptions) error {
 	return nil
 }
 
-func (h *HelmDeployer) initActionConfig(namespace string) (*action.Configuration, error) {
+func initActionConfig(namespace string) (*action.Configuration, error) {
 	cfg := &action.Configuration{}
 
 	flags := &genericclioptions.ConfigFlags{
 		Namespace: &namespace,
 	}
-	flags.WithWrapConfigFn(func(*rest.Config) *rest.Config {
-		return h.restConfig
-	})
 
 	if err := cfg.Init(flags, namespace, "secret", func(format string, v ...any) {}); err != nil {
 		return nil, fmt.Errorf("failed to init action config: %w", err)
