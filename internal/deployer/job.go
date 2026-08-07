@@ -148,9 +148,9 @@ func (j *JobDeployer) buildJob(opts DeployOptions, op, specJSON string) *batchv1
 							{Name: EnvOp, Value: op},
 							{Name: EnvSpec, Value: specJSON},
 							// NOTE: all HELM_* env variables should be passed here. distrolles helm cache writes in /tmp
-							{Name: "HELM_CACHE_HOME", Value: "tmp/.helm/cache"},
-							{Name: "HELM_CONFIG_HOME", Value: "tmp/.helm/config"},
-							{Name: "HELM_DATA_HOME", Value: "tmp/.helm/data"},
+							{Name: "HELM_CACHE_HOME", Value: "/tmp/.helm/cache"},
+							{Name: "HELM_CONFIG_HOME", Value: "/tmp/.helm/config"},
+							{Name: "HELM_DATA_HOME", Value: "/tmp/.helm/data"},
 						},
 						VolumeMounts: []corev1.VolumeMount{{Name: "tmp", MountPath: "/tmp"}},
 					}},
