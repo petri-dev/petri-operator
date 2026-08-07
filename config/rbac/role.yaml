@@ -17,6 +17,13 @@ rules:
 - apiGroups:
   - ""
   resources:
+  - pods
+  verbs:
+  - get
+  - list
+- apiGroups:
+  - ""
+  resources:
   - services
   verbs:
   - get
@@ -28,6 +35,16 @@ rules:
   - deployments
   - statefulsets
   verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - batch
+  resources:
+  - jobs
+  verbs:
+  - create
+  - delete
   - get
   - list
   - watch

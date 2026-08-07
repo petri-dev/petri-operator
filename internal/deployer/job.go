@@ -25,7 +25,7 @@ const (
 )
 
 func jobName(op, release string) string {
-	name := "petri-" + op + release
+	name := "petri-" + op + "-" + release
 	if len(name) <= maxJobNameLen {
 		return name
 	}
@@ -109,7 +109,7 @@ func (j *JobDeployer) observe(ctx context.Context, opts DeployOptions, op string
 func (j *JobDeployer) failureReason(ctx context.Context, opts DeployOptions, op string) string {
 	pods := &corev1.PodList{}
 	if err := j.Client.List(ctx, pods, client.InNamespace(opts.Namespace), client.MatchingLabels{"job-name": jobName(op, opts.ReleaseName)}); err != nil {
-		return "deploy job failed (could not read pod: " + err.Error() + ")"
+		return op + " job failed (could not read pod: " + err.Error() + ")"
 	}
 	for _, p := range pods.Items {
 		for _, cs := range p.Status.ContainerStatuses {
@@ -119,23 +119,21 @@ func (j *JobDeployer) failureReason(ctx context.Context, opts DeployOptions, op 
 		}
 	}
 
-	return "deploy job failed"
+	return op + " job failed"
 }
 
 func (j *JobDeployer) buildJob(opts DeployOptions, op, specJSON string) *batchv1.Job {
 	backoff := int32(0)
-	deadline := int64(j.Deadline)
 	labels := jobLabels(opts, op)
 
-	return &batchv1.Job{
+	job := &batchv1.Job{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      jobName(op, opts.ReleaseName),
 			Namespace: opts.Namespace,
 			Labels:    labels,
 		},
 		Spec: batchv1.JobSpec{
-			BackoffLimit:          &backoff,
-			ActiveDeadlineSeconds: &deadline,
+			BackoffLimit: &backoff,
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{Labels: labels},
 				Spec: corev1.PodSpec{
@@ -144,6 +142,8 @@ func (j *JobDeployer) buildJob(opts DeployOptions, op, specJSON string) *batchv1
 					Containers: []corev1.Container{{
 						Name:  "deployer",
 						Image: j.Image,
+						// IfNotPresent so a locally-loaded image (kind load) is used without aregistry pull
+						ImagePullPolicy: corev1.PullIfNotPresent,
 						Env: []corev1.EnvVar{
 							{Name: EnvOp, Value: op},
 							{Name: EnvSpec, Value: specJSON},
@@ -162,4 +162,11 @@ func (j *JobDeployer) buildJob(opts DeployOptions, op, specJSON string) *batchv1
 			},
 		},
 	}
+
+	if j.Deadline > 0 {
+		secs := int64(j.Deadline.Seconds())
+		job.Spec.ActiveDeadlineSeconds = &secs
+	}
+
+	return job
 }
