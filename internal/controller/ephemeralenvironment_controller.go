@@ -80,6 +80,7 @@ type EphemeralEnvironmentReconciler struct {
 // +kubebuilder:rbac:groups=core.petri.run,resources=ephemeralenvironments/finalizers,verbs=update
 // +kubebuilder:rbac:groups=core.petri.run,resources=environmenttemplates,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;list;watch;create;delete
+// +kubebuilder:rbac:groups="",resources=serviceaccounts,verbs=get;list;watch;create;delete
 // +kubebuilder:rbac:groups=apps,resources=deployments;statefulsets,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=services,verbs=get;list;watch
 // +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=rolebindings,verbs=get;list;watch;create;delete
@@ -246,6 +247,13 @@ func (r *EphemeralEnvironmentReconciler) reconcileDelete(ctx context.Context, en
 }
 
 func (r *EphemeralEnvironmentReconciler) ensureDeployerRoleBinding(ctx context.Context, targetNs string) error {
+	sa := &corev1.ServiceAccount{
+		ObjectMeta: metav1.ObjectMeta{Name: deployerRoleBinding, Namespace: targetNs},
+	}
+	if err := r.Create(ctx, sa); err != nil && !apierrors.IsAlreadyExists(err) {
+		return err
+	}
+
 	rb := &rbacv1.RoleBinding{}
 	err := r.Get(ctx, client.ObjectKey{Namespace: targetNs, Name: deployerRoleBinding}, rb)
 	if err == nil {
@@ -265,8 +273,8 @@ func (r *EphemeralEnvironmentReconciler) ensureDeployerRoleBinding(ctx context.C
 		},
 		Subjects: []rbacv1.Subject{{
 			Kind:      rbacv1.ServiceAccountKind,
-			Name:      "petri-controller-manager",
-			Namespace: "petri-system",
+			Name:      deployerRoleBinding,
+			Namespace: targetNs,
 		}},
 	}
 

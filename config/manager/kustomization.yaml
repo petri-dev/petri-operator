@@ -2,18 +2,18 @@ apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
 resources:
-  - manager.yaml
+- manager.yaml
 
 configMapGenerator:
-  - literals:
-      - image=petri-deployer:latest
-    name: deployer-image
-    options:
-      disableNameSuffixHash: true
+- literals:
+  - image=petri-deployer:latest
+  name: deployer-image
+  options:
+    disableNameSuffixHash: true
 
 generatorOptions:
   disableNameSuffixHash: true
 images:
-  - name: controller
-    newName: controller
-    newTag: latest
+- name: controller
+  newName: controller
+  newTag: latest

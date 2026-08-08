@@ -59,12 +59,13 @@ spec:
           type: RuntimeDefault
       containers:
         - command:
-            - /manager
+            - /app
           args:
             - --leader-elect
             - --health-probe-bind-address=:8081
           image: controller:latest
           name: manager
+          imagePullPolicy: IfNotPresent
           env:
             - name: PETRI_DEPLOYER_IMAGE
               value: petri-deployer:latest # overwritten by kustomize replacements from the deployer image ConfigMap

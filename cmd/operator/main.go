@@ -182,6 +182,7 @@ func main() {
 		Scheme: mgr.GetScheme(),
 		Deployer: &deployer.JobDeployer{
 			Client:         mgr.GetClient(),
+			Reader:         mgr.GetAPIReader(),
 			Image:          os.Getenv("PETRI_DEPLOYER_IMAGE"),
 			ServiceAccount: cmp.Or(os.Getenv("PETRI_DEPLOYER_SA"), "petri-deployer"),
 			// TODO hardcoded, wire to a CRD timeout field in the future
