@@ -59,19 +59,16 @@ spec:
           type: RuntimeDefault
       containers:
         - command:
-            - /manager
+            - /app
           args:
             - --leader-elect
             - --health-probe-bind-address=:8081
           image: controller:latest
           name: manager
+          imagePullPolicy: IfNotPresent
           env:
-            - name: HELM_CACHE_HOME
-              value: /tmp/helm/cache
-            - name: HELM_CONFIG_HOME
-              value: /tmp/helm/config
-            - name: HELM_DATA_HOME
-              value: /tmp/helm/data
+            - name: PETRI_DEPLOYER_IMAGE
+              value: petri-deployer:latest # overwritten by kustomize replacements from the deployer image ConfigMap
           ports:
             - containerPort: 8081
               name: health
@@ -99,15 +96,9 @@ spec:
           resources:
             limits:
               cpu: 500m
-              memory: 2Gi
+              memory: 256Mi
             requests:
               cpu: 10m
               memory: 256Mi
-          volumeMounts:
-            - name: tmp
-              mountPath: /tmp
-      volumes:
-        - name: tmp
-          emptyDir: {}
       serviceAccountName: controller-manager
       terminationGracePeriodSeconds: 10

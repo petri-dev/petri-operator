@@ -8,12 +8,20 @@ rules:
   - ""
   resources:
   - namespaces
+  - serviceaccounts
   verbs:
   - create
   - delete
   - get
   - list
   - watch
+- apiGroups:
+  - ""
+  resources:
+  - pods
+  verbs:
+  - get
+  - list
 - apiGroups:
   - ""
   resources:
@@ -28,6 +36,16 @@ rules:
   - deployments
   - statefulsets
   verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - batch
+  resources:
+  - jobs
+  verbs:
+  - create
+  - delete
   - get
   - list
   - watch

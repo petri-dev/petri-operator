@@ -25,6 +25,7 @@ type Phase string
 
 const (
 	PhasePending     Phase = "Pending"
+	PhaseSubmitting  Phase = "Submitting"
 	PhaseDeploying   Phase = "Deploying"
 	PhaseReady       Phase = "Ready"
 	PhaseFailed      Phase = "Failed"
@@ -53,6 +54,8 @@ type ComponentStatus struct {
 	DeployRetries int32 `json:"deployRetries,omitempty"`
 	// +optional
 	DeployingSince *metav1.Time `json:"deployingSince,omitempty"`
+	// +optional
+	LastFailureReason string `json:"lastFailureReason,omitempty"`
 }
 
 // EphemeralEnvironmentStatus defines the observed state of EphemeralEnvironment.
