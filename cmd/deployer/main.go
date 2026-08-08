@@ -34,7 +34,7 @@ func main() {
 }
 
 func fail(err error) {
-	_ = os.WriteFile("/dev/termination-log", []byte(err.Error()), 0644)
+	_ = os.WriteFile("/dev/termination-log", []byte(err.Error()), 0644) //nolint:gosec // hardcoded path, not user input
 	os.Exit(1)
 }
 

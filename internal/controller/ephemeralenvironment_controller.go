@@ -50,7 +50,7 @@ const (
 	requeueImmediate = time.Second
 	maxDeployRetries = 5
 	maxDeployBackoff = 5 * time.Minute
-	// TODO make them configurable through EphemeralEnvironment.Spec.TTL
+	// TODO make them configurable through EphemeralEnvironment.Spec.TTL.
 	deployTimeout = 15 * time.Minute
 	// deployConcurrency bounds how many deploy/undeploy Jobs are submitted or
 	// observed at once, per level.

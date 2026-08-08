@@ -11,7 +11,6 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -97,11 +96,12 @@ func (j *JobDeployer) SubmitUndeploy(ctx context.Context, opts DeployOptions) er
 	return j.submit(ctx, opts, OpUndeploy)
 }
 
-func (d *JobDeployer) Observe(ctx context.Context, opts DeployOptions) (JobState, error) {
-	return d.observe(ctx, opts, OpDeploy)
+func (j *JobDeployer) Observe(ctx context.Context, opts DeployOptions) (JobState, error) {
+	return j.observe(ctx, opts, OpDeploy)
 }
-func (d *JobDeployer) ObserveUndeploy(ctx context.Context, opts DeployOptions) (JobState, error) {
-	return d.observe(ctx, opts, OpUndeploy)
+
+func (j *JobDeployer) ObserveUndeploy(ctx context.Context, opts DeployOptions) (JobState, error) {
+	return j.observe(ctx, opts, OpUndeploy)
 }
 
 func (j *JobDeployer) observe(ctx context.Context, opts DeployOptions, op string) (JobState, error) {
