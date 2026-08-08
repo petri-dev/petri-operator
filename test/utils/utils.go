@@ -178,7 +178,7 @@ func PushStubChart(ctx context.Context, registryPort string) string {
 		panic("PushStubChart: helm package failed: " + string(out) + ": " + err.Error())
 	}
 
-	cmd = exec.CommandContext(ctx, "helm", "push", "/tmp/petri-e2e-stub-0.1.0.tgz",
+	cmd = exec.CommandContext(ctx, "helm", "push", "/tmp/petri-e2e-stub-0.1.0.tgz", //nolint:gosec
 		"oci://"+registry)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		panic("PushStubChart: helm push failed: " + string(out) + ": " + err.Error())

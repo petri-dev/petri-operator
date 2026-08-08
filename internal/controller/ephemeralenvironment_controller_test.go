@@ -24,13 +24,14 @@ import (
 
 	corev1alpha1 "github.com/nuromirg/petri/api/v1alpha1"
 	"github.com/nuromirg/petri/internal/deployer"
-	. "github.com/onsi/ginkgo/v2"
-	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes/scheme"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
+
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
 )
 
 func reconcileUntilTerminal(r *EphemeralEnvironmentReconciler, key types.NamespacedName, maxIterations int) corev1alpha1.Phase {

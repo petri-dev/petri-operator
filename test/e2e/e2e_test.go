@@ -425,7 +425,7 @@ var _ = Describe("EphemeralEnvironment", Ordered, func() {
 			}, 10*time.Minute, 15*time.Second).Should(Equal("Failed"))
 
 			By("asserting the failure reason is surfaced")
-			cmd = exec.Command("kubectl", "get", "ephemeralenvironment", envName,
+			cmd := exec.Command("kubectl", "get", "ephemeralenvironment", envName,
 				"-n", envNS,
 				"-o", `jsonpath={.status.conditions[?(@.type=="Ready")].reason}`)
 			out, err := utils.Run(cmd)
