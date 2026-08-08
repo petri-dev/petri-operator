@@ -1,0 +1,24 @@
+apiVersion: core.petri.run/v1alpha1
+kind: EnvironmentTemplate
+metadata:
+  name: e2e-single
+  namespace: default
+spec:
+  ingress:
+    domain: example.com
+  components:
+    - name: svc
+      helm:
+        chart: "PETRI_E2E_CHART_REF"
+        version: "0.1.0"
+---
+apiVersion: core.petri.run/v1alpha1
+kind: EphemeralEnvironment
+metadata:
+  name: e2e-pr-single
+  namespace: default
+spec:
+  template: e2e-single
+  source:
+    repo: https://github.com/example/repo
+    branch: main

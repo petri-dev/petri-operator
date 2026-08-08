@@ -1,0 +1,23 @@
+apiVersion: core.petri.run/v1alpha1
+kind: EnvironmentTemplate
+metadata:
+  name: bad-chart
+  namespace: default
+spec:
+  components:
+    - name: broken
+      helm:
+        repo: https://charts.bitnami.com/bitnami
+        chart: this-chart-does-not-exist-xyz
+        version: "999.0.0"
+---
+apiVersion: core.petri.run/v1alpha1
+kind: EphemeralEnvironment
+metadata:
+  name: test-s2
+  namespace: default
+spec:
+  template: bad-chart
+  source:
+    repo: https://github.com/example/app
+    branch: main

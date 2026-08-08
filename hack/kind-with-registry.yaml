@@ -1,0 +1,11 @@
+# Kind cluster config that connects to the local e2e registry on port 5001.
+# Used by `make setup-test-e2e` so deploy Jobs can pull the stub chart via
+# oci://localhost:5001/petri-e2e-stub without external network access.
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+containerdConfigPatches:
+  - |-
+    [plugins."io.containerd.grpc.v1.cri".registry]
+      [plugins."io.containerd.grpc.v1.cri".registry.mirrors]
+        [plugins."io.containerd.grpc.v1.cri".registry.mirrors."localhost:5001"]
+          endpoint = ["http://petri-e2e-registry:5000"]

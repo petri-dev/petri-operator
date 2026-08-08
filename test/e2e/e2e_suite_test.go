@@ -34,7 +34,10 @@ import (
 
 var (
 	// managerImage is the manager image to be built and loaded for testing.
-	managerImage = "example.com/petri:v0.0.1"
+	managerImage  = "example.com/petri:v0.0.1"
+	deployerImage = "example.com/petri-deployer:v0.0.1"
+	// e2eChartRef is the OCI ref for the stub chart pushed to the local registry. Set during BeforeSuite after the registry is ready.
+	e2eChartRef = ""
 	// shouldCleanupCertManager tracks whether CertManager was installed by this suite.
 	shouldCleanupCertManager = false
 )
@@ -57,17 +60,50 @@ var _ = BeforeSuite(func(ctx context.Context) {
 	_, err := utils.Run(cmd)
 	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to build the manager image")
 
-	// TODO(user): If you want to change the e2e test vendor from Kind,
-	// ensure the image is built and available, then remove the following block.
 	By("loading the manager image on Kind")
 	err = utils.LoadImageToKindClusterWithName(ctx, managerImage)
 	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to load the manager image into Kind")
+
+	By("building the deployer image")
+	if v := os.Getenv("DEPLOYER_IMG"); v != "" {
+		deployerImage = v
+	}
+	cmd = exec.Command("make", "docker-build-deployer", fmt.Sprintf("DEPLOYER_IMG=%s", deployerImage))
+	_, err = utils.Run(cmd)
+	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to build the deployer image")
+
+	By("loading the deployer image on Kind")
+	err = utils.LoadImageToKindClusterWithName(ctx, deployerImage)
+	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to load the deployer image into Kind")
+
+	By("deploying the operator with both images")
+	cmd = exec.Command("make", "deploy",
+		fmt.Sprintf("IMG=%s", managerImage),
+		fmt.Sprintf("DEPLOYER_IMG=%s", deployerImage),
+	)
+	_, err = utils.Run(cmd)
+	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to deploy the operator")
+
+	By("pushing the stub chart to the local OCI registry")
+	registryPort := os.Getenv("E2E_REGISTRY_PORT")
+	if registryPort == "" {
+		registryPort = "5001"
+	}
+	e2eChartRef = utils.PushStubChart(ctx, registryPort)
 
 	configureKubectlKubeRC()
 	setupCertManager(ctx)
 })
 
 var _ = AfterSuite(func(ctx context.Context) {
+	By("undeploying the operator")
+	cmd := exec.Command("make", "undeploy")
+	_, _ = utils.Run(cmd)
+
+	By("uninstalling CRDs")
+	cmd = exec.Command("make", "uninstall")
+	_, _ = utils.Run(cmd)
+
 	teardownCertManager(ctx)
 })
 

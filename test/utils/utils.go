@@ -164,7 +164,28 @@ func GetNonEmptyLines(output string) []string {
 	return res
 }
 
-// GetProjectDir will return the directory where the project is.
+func PushStubChart(ctx context.Context, registryPort string) string {
+	projectDir, err := GetProjectDir()
+	if err != nil {
+		panic("PushStubChart: GetProjectDir: " + err.Error())
+	}
+
+	chartDir := projectDir + "/test/e2e/testdata/chart"
+	registry := "localhost:" + registryPort
+
+	cmd := exec.CommandContext(ctx, "helm", "package", chartDir, "--destination", "/tmp")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		panic("PushStubChart: helm package failed: " + string(out) + ": " + err.Error())
+	}
+
+	cmd = exec.CommandContext(ctx, "helm", "push", "/tmp/petri-e2e-stub-0.1.0.tgz",
+		"oci://"+registry)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		panic("PushStubChart: helm push failed: " + string(out) + ": " + err.Error())
+	}
+
+	return "oci://" + registry + "/petri-e2e-stub"
+}
 func GetProjectDir() (string, error) {
 	wd, err := os.Getwd()
 	if err != nil {
