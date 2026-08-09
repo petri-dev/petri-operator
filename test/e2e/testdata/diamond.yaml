@@ -1,40 +1,41 @@
----
 apiVersion: core.petri.run/v1alpha1
 kind: EnvironmentTemplate
 metadata:
-  name: e2e-diamond
+  name: PETRI_E2E_TMPL_NAME
   namespace: default
 spec:
-  ingress:
-    domain: example.com
   components:
     - name: postgres
       helm:
         chart: "PETRI_E2E_CHART_REF"
         version: "0.1.0"
+        plainHTTP: true
     - name: api
       helm:
         chart: "PETRI_E2E_CHART_REF"
         version: "0.1.0"
+        plainHTTP: true
       dependsOn: [postgres]
     - name: cache
       helm:
         chart: "PETRI_E2E_CHART_REF"
         version: "0.1.0"
+        plainHTTP: true
       dependsOn: [postgres]
     - name: frontend
       helm:
         chart: "PETRI_E2E_CHART_REF"
         version: "0.1.0"
+        plainHTTP: true
       dependsOn: [api, cache]
 ---
 apiVersion: core.petri.run/v1alpha1
 kind: EphemeralEnvironment
 metadata:
-  name: e2e-pr-diamond
+  name: PETRI_E2E_ENV_NAME
   namespace: default
 spec:
-  template: e2e-diamond
+  template: PETRI_E2E_TMPL_NAME
   source:
     repo: https://github.com/example/repo
     branch: main

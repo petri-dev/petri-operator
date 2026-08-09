@@ -21,6 +21,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"math/rand"
 	"os"
 	"os/exec"
 	"strings"
@@ -151,6 +152,15 @@ func LoadImageToKindClusterWithName(ctx context.Context, name string) error {
 }
 
 // GetNonEmptyLines converts given command output string into individual objects
+func RandomSuffix() string {
+	const chars = "abcdefghijklmnopqrstuvwxyz0123456789"
+	b := make([]byte, 6)
+	for i := range b {
+		b[i] = chars[rand.Intn(len(chars))]
+	}
+	return string(b)
+}
+
 // according to line breakers, and ignores the empty elements in it.
 func GetNonEmptyLines(output string) []string {
 	var res []string
@@ -184,7 +194,7 @@ func PushStubChart(ctx context.Context, registryPort string) string {
 		panic("PushStubChart: helm push failed: " + string(out) + ": " + err.Error())
 	}
 
-	return "oci://" + registry + "/petri-e2e-stub"
+	return "oci://petri-e2e-registry:5000/petri-e2e-stub"
 }
 func GetProjectDir() (string, error) {
 	wd, err := os.Getwd()

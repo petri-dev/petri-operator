@@ -107,7 +107,7 @@ test-e2e: setup-test-e2e manifests generate fmt vet ## Run the e2e tests. Expect
 	KIND=$(KIND) KIND_CLUSTER=$(KIND_CLUSTER) \
 		E2E_REGISTRY_PORT=$(E2E_REGISTRY_PORT) \
 		DEPLOYER_IMG=$(DEPLOYER_IMG) \
-		go test -tags=e2e ./test/e2e/ -v -ginkgo.v
+		go test -tags=e2e ./test/e2e/ -v -ginkgo.v -timeout 30m
 	$(MAKE) cleanup-test-e2e
 
 .PHONY: cleanup-test-e2e

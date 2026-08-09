@@ -34,8 +34,8 @@ import (
 
 var (
 	// managerImage is the manager image to be built and loaded for testing.
-	managerImage  = "example.com/petri:v0.0.1"
-	deployerImage = "example.com/petri-deployer:v0.0.1"
+	managerImage  = "ghcr.io/nuromirg/petri:v0.0.1"
+	deployerImage = "ghcr.io/nuromirg/petri-deployer:v0.0.1"
 	// e2eChartRef is the OCI ref for the stub chart pushed to the local registry. Set during BeforeSuite after the registry is ready.
 	e2eChartRef = ""
 	// shouldCleanupCertManager tracks whether CertManager was installed by this suite.
@@ -83,6 +83,14 @@ var _ = BeforeSuite(func(ctx context.Context) {
 	)
 	_, err = utils.Run(cmd)
 	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to deploy the operator")
+
+	By("waiting for CRDs to be established")
+	cmd = exec.Command("kubectl", "wait", "--for=condition=Established",
+		"crd/ephemeralenvironments.core.petri.run",
+		"crd/environmenttemplates.core.petri.run",
+		"--timeout=60s")
+	_, err = utils.Run(cmd)
+	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "CRDs not established in time")
 
 	By("pushing the stub chart to the local OCI registry")
 	registryPort := os.Getenv("E2E_REGISTRY_PORT")

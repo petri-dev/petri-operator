@@ -29,6 +29,7 @@ type HelmSpec struct {
 	Version    string            `json:"version,omitempty"`
 	Values     map[string]string `json:"values,omitempty"`
 	ValuesFile string            `json:"valuesFile,omitempty"`
+	PlainHTTP  bool              `json:"plainHTTP,omitempty"`
 }
 
 type HelmGitRef struct {

@@ -24,17 +24,20 @@ func Install(ctx context.Context, opts DeployOptions) error {
 		return err
 	}
 
-	registryClient, err := registry.NewClient()
+	helmSpec := opts.Component.Helm
+
+	var regOpts []registry.ClientOption
+	if helmSpec.PlainHTTP {
+		regOpts = append(regOpts, registry.ClientOptPlainHTTP())
+	}
+	registryClient, err := registry.NewClient(regOpts...)
 	if err != nil {
 		return fmt.Errorf("failed to create registry client: %w", err)
 	}
-
 	cfg.RegistryClient = registryClient
 
 	settings := cli.New()
 	settings.SetNamespace(opts.Namespace)
-
-	helmSpec := opts.Component.Helm
 
 	locator := action.NewInstall(cfg)
 	locator.ChartPathOptions.RepoURL = helmSpec.Repo

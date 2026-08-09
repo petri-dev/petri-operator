@@ -159,10 +159,8 @@ func (r *EphemeralEnvironmentReconciler) reconcile(ctx context.Context, env *v1a
 		}
 	}
 
-	for _, cs := range env.Status.Components {
-		if cs.Phase == v1alpha1.PhaseFailed {
-			return ctrl.Result{}, r.setFailed(env, "ComponentFailed", cs.Name+" failed to deploy")
-		}
+	if env.Status.Phase == v1alpha1.PhaseFailed {
+		return ctrl.Result{}, nil
 	}
 
 	env.Status.Phase = v1alpha1.PhaseDeploying

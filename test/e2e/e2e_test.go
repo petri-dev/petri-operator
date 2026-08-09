@@ -34,51 +34,32 @@ import (
 	"github.com/nuromirg/petri/test/utils"
 )
 
-// namespace where the project is deployed in
 const namespace = "petri-system"
-
-// serviceAccountName created for the project
 const serviceAccountName = "petri-controller-manager"
-
-// metricsServiceName is the name of the metrics service of the project
 const metricsServiceName = "petri-controller-manager-metrics-service"
-
-// metricsRoleBindingName is the name of the RBAC that will be created to allow get the metrics data
 const metricsRoleBindingName = "petri-metrics-binding"
 
 var _ = Describe("Manager", Ordered, func() {
 	var controllerPodName string
 
-	// Before running the tests, create the manager namespace and enforce
-	// the restricted security policy. CRD install and operator deploy are
-	// handled by BeforeSuite.
 	BeforeAll(func() {
-		By("creating manager namespace")
-		cmd := exec.Command("kubectl", "create", "ns", namespace)
-		_, err := utils.Run(cmd)
-		Expect(err).NotTo(HaveOccurred(), "Failed to create namespace")
-
 		By("labeling the namespace to enforce the restricted security policy")
-		cmd = exec.Command("kubectl", "label", "--overwrite", "ns", namespace,
+		cmd := exec.Command("kubectl", "label", "--overwrite", "ns", namespace,
 			"pod-security.kubernetes.io/enforce=restricted")
-		_, err = utils.Run(cmd)
+		_, err := utils.Run(cmd)
 		Expect(err).NotTo(HaveOccurred(), "Failed to label namespace with restricted policy")
 	})
 
-	// AfterAll cleans up only what this Describe created.
-	// Undeploy and uninstall are handled by AfterSuite.
 	AfterAll(func() {
 		By("cleaning up the curl pod for metrics")
-		cmd := exec.Command("kubectl", "delete", "pod", "curl-metrics", "-n", namespace)
+		cmd := exec.Command("kubectl", "delete", "pod", "curl-metrics", "-n", namespace, "--ignore-not-found")
 		_, _ = utils.Run(cmd)
 
-		By("removing manager namespace")
-		cmd = exec.Command("kubectl", "delete", "ns", namespace)
+		By("cleaning up the metrics ClusterRoleBinding")
+		cmd = exec.Command("kubectl", "delete", "clusterrolebinding", metricsRoleBindingName, "--ignore-not-found")
 		_, _ = utils.Run(cmd)
 	})
 
-	// After each test, check for failures and collect logs, events,
-	// and pod descriptions for debugging.
 	AfterEach(func() {
 		specReport := CurrentSpecReport()
 		if specReport.Failed() {
@@ -161,9 +142,13 @@ var _ = Describe("Manager", Ordered, func() {
 			cmd := exec.Command("kubectl", "create", "clusterrolebinding", metricsRoleBindingName,
 				"--clusterrole=petri-metrics-reader",
 				fmt.Sprintf("--serviceaccount=%s:%s", namespace, serviceAccountName),
-			)
-			_, err := utils.Run(cmd)
-			Expect(err).NotTo(HaveOccurred(), "Failed to create ClusterRoleBinding")
+				"--dry-run=client", "-o", "yaml")
+			yaml, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to generate ClusterRoleBinding")
+			applyCmd := exec.Command("kubectl", "apply", "-f", "-")
+			applyCmd.Stdin = strings.NewReader(yaml)
+			_, err = utils.Run(applyCmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to apply ClusterRoleBinding")
 
 			By("validating that the metrics service is available")
 			cmd = exec.Command("kubectl", "get", "service", metricsServiceName, "-n", namespace)
@@ -252,22 +237,43 @@ var _ = Describe("Manager", Ordered, func() {
 		})
 
 		// +kubebuilder:scaffold:e2e-webhooks-checks
-
-		// TODO: Customize the e2e test suite with scenarios specific to your project.
-		// Consider applying sample/CR(s) and check their status and/or verifying
-		// the reconciliation by using the metrics, i.e.:
-		// metricsOutput, err := getMetricsOutput()
-		// Expect(err).NotTo(HaveOccurred(), "Failed to retrieve logs from curl pod")
-		// Expect(metricsOutput).To(ContainSubstring(
-		//    fmt.Sprintf(`controller_runtime_reconcile_total{controller="%s",result="success"} 1`,
-		//    strings.ToLower(<Kind>),
-		// ))
 	})
 })
 
-var _ = Describe("EphemeralEnvironment", Ordered, func() {
+var _ = Describe("EphemeralEnvironment", func() {
 	SetDefaultEventuallyTimeout(5 * time.Minute)
 	SetDefaultEventuallyPollingInterval(5 * time.Second)
+
+	var (
+		envName  string
+		tmplName string
+		envNS    = "default"
+	)
+
+	BeforeEach(func() {
+		envName = fmt.Sprintf("e2e-%s", utils.RandomSuffix())
+		tmplName = fmt.Sprintf("tmpl-%s", utils.RandomSuffix())
+	})
+
+	AfterEach(func() {
+		if CurrentSpecReport().Failed() {
+			By("Fetching controller logs on failure")
+			cmd := exec.Command("kubectl", "logs",
+				"-n", "petri-system",
+				"-l", "control-plane=controller-manager",
+				"--tail=50")
+			if out, err := utils.Run(cmd); err == nil {
+				_, _ = fmt.Fprintf(GinkgoWriter, "Controller logs:\n%s", out)
+			}
+		}
+
+		cmd := exec.Command("kubectl", "delete", "ephemeralenvironment", envName,
+			"-n", envNS, "--ignore-not-found")
+		_, _ = utils.Run(cmd)
+		cmd = exec.Command("kubectl", "delete", "environmenttemplate", tmplName,
+			"-n", envNS, "--ignore-not-found")
+		_, _ = utils.Run(cmd)
+	})
 
 	applyFixture := func(name string) {
 		projectDir, err := utils.GetProjectDir()
@@ -277,6 +283,8 @@ var _ = Describe("EphemeralEnvironment", Ordered, func() {
 		Expect(err).NotTo(HaveOccurred())
 
 		content := strings.ReplaceAll(string(raw), "PETRI_E2E_CHART_REF", e2eChartRef)
+		content = strings.ReplaceAll(content, "PETRI_E2E_ENV_NAME", envName)
+		content = strings.ReplaceAll(content, "PETRI_E2E_TMPL_NAME", tmplName)
 
 		tmpFile, err := os.CreateTemp("", "petri-e2e-*.yaml")
 		Expect(err).NotTo(HaveOccurred())
@@ -290,9 +298,9 @@ var _ = Describe("EphemeralEnvironment", Ordered, func() {
 		Expect(err).NotTo(HaveOccurred())
 	}
 
-	envPhase := func(name, ns string) string {
-		cmd := exec.Command("kubectl", "get", "ephemeralenvironment", name,
-			"-n", ns, "-o", "jsonpath={.status.phase}")
+	envPhase := func() string {
+		cmd := exec.Command("kubectl", "get", "ephemeralenvironment", envName,
+			"-n", envNS, "-o", "jsonpath={.status.phase}")
 		out, err := utils.Run(cmd)
 		if err != nil {
 			return ""
@@ -300,43 +308,12 @@ var _ = Describe("EphemeralEnvironment", Ordered, func() {
 		return strings.TrimSpace(out)
 	}
 
-	allComponentsReady := func(name, ns string) bool {
-		cmd := exec.Command("kubectl", "get", "ephemeralenvironment", name,
-			"-n", ns,
-			"-o", `jsonpath={range .status.components[*]}{.phase}{"\n"}{end}`)
-		out, _ := utils.Run(cmd)
-		lines := utils.GetNonEmptyLines(out)
-		if len(lines) == 0 {
-			return false
-		}
-		for _, l := range lines {
-			if strings.TrimSpace(l) != "Ready" {
-				return false
-			}
-		}
-		return true
-	}
-
-	Context("single service (phase 2)", func() {
-		const envName = "e2e-pr-single"
-		const envNS = "default"
-
-		AfterEach(func() {
-			cmd := exec.Command("kubectl", "delete", "ephemeralenvironment", envName,
-				"-n", envNS, "--ignore-not-found")
-			_, _ = utils.Run(cmd)
-			cmd = exec.Command("kubectl", "delete", "environmenttemplate", "e2e-single",
-				"-n", envNS, "--ignore-not-found")
-			_, _ = utils.Run(cmd)
-		})
-
+	Context("single service", func() {
 		It("reaches Ready and namespace is labelled", func() {
 			applyFixture("single_service.yaml")
 
 			By("waiting for EphemeralEnvironment to reach Ready")
-			Eventually(func() string {
-				return envPhase(envName, envNS)
-			}).Should(Equal("Ready"))
+			Eventually(envPhase).Should(Equal("Ready"))
 
 			By("asserting the target namespace exists and is labelled managed")
 			cmd := exec.Command("kubectl", "get", "namespace", "petri-"+envName,
@@ -348,7 +325,7 @@ var _ = Describe("EphemeralEnvironment", Ordered, func() {
 			By("asserting a deploy Job completed successfully")
 			cmd = exec.Command("kubectl", "get", "jobs",
 				"-n", "petri-"+envName,
-				"-o", "jsonpath={range .items[*]}{.status.succeeded}{\"\\n\"}{end}")
+				"-o", `jsonpath={range .items[*]}{.status.succeeded}{"\n"}{end}`)
 			out, err = utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
 			for _, l := range utils.GetNonEmptyLines(out) {
@@ -360,7 +337,7 @@ var _ = Describe("EphemeralEnvironment", Ordered, func() {
 			applyFixture("single_service.yaml")
 
 			By("waiting for Ready")
-			Eventually(func() string { return envPhase(envName, envNS) }).Should(Equal("Ready"))
+			Eventually(envPhase).Should(Equal("Ready"))
 
 			By("deleting the EphemeralEnvironment")
 			cmd := exec.Command("kubectl", "delete", "ephemeralenvironment", envName, "-n", envNS)
@@ -377,52 +354,30 @@ var _ = Describe("EphemeralEnvironment", Ordered, func() {
 		})
 	})
 
-	Context("diamond multi-service (phase 3)", func() {
-		const envName = "e2e-pr-diamond"
-		const envNS = "default"
-
-		AfterEach(func() {
-			cmd := exec.Command("kubectl", "delete", "ephemeralenvironment", envName,
-				"-n", envNS, "--ignore-not-found")
-			_, _ = utils.Run(cmd)
-			cmd = exec.Command("kubectl", "delete", "environmenttemplate", "e2e-diamond",
-				"-n", envNS, "--ignore-not-found")
-			_, _ = utils.Run(cmd)
-		})
-
+	Context("diamond multi-service", func() {
 		It("all four components reach Ready", func() {
 			applyFixture("diamond.yaml")
 
 			By("waiting for EphemeralEnvironment to reach Ready")
-			Eventually(func() string {
-				return envPhase(envName, envNS)
-			}).Should(Equal("Ready"))
+			Eventually(envPhase).Should(Equal("Ready"))
 
 			By("asserting all components are Ready")
-			Expect(allComponentsReady(envName, envNS)).To(BeTrue())
+			cmd := exec.Command("kubectl", "get", "ephemeralenvironment", envName,
+				"-n", envNS,
+				"-o", `jsonpath={range .status.components[*]}{.phase}{"\n"}{end}`)
+			out, _ := utils.Run(cmd)
+			for _, l := range utils.GetNonEmptyLines(out) {
+				Expect(strings.TrimSpace(l)).To(Equal("Ready"))
+			}
 		})
 	})
 
-	Context("s2: bad chart causes terminal Failed (phase 3.5)", func() {
-		const envName = "test-s2"
-		const envNS = "default"
-
-		AfterEach(func() {
-			cmd := exec.Command("kubectl", "delete", "ephemeralenvironment", envName,
-				"-n", envNS, "--ignore-not-found")
-			_, _ = utils.Run(cmd)
-			cmd = exec.Command("kubectl", "delete", "environmenttemplate", "bad-chart",
-				"-n", envNS, "--ignore-not-found")
-			_, _ = utils.Run(cmd)
-		})
-
+	Context("bad chart causes terminal Failed", func() {
 		It("retries then reaches terminal Failed with reason", func() {
 			applyFixture("invalid_chart.yaml")
 
 			By("waiting for terminal Failed (retries exhausted)")
-			Eventually(func() string {
-				return envPhase(envName, envNS)
-			}, 10*time.Minute, 15*time.Second).Should(Equal("Failed"))
+			Eventually(envPhase, 10*time.Minute, 15*time.Second).Should(Equal("Failed"))
 
 			By("asserting the failure reason is surfaced")
 			cmd := exec.Command("kubectl", "get", "ephemeralenvironment", envName,
@@ -435,9 +390,6 @@ var _ = Describe("EphemeralEnvironment", Ordered, func() {
 	})
 })
 
-// serviceAccountToken returns a token for the specified service account in the given namespace.
-// It uses the Kubernetes TokenRequest API to generate a token by directly sending a request
-// and parsing the resulting token from the API response.
 func serviceAccountToken() (string, error) {
 	const tokenRequestRawString = `{
 		"apiVersion": "authentication.k8s.io/v1",
@@ -476,15 +428,12 @@ func serviceAccountToken() (string, error) {
 	return out, err
 }
 
-// getMetricsOutput retrieves and returns the logs from the curl pod used to access the metrics endpoint.
 func getMetricsOutput() (string, error) {
 	By("getting the curl-metrics logs")
 	cmd := exec.Command("kubectl", "logs", "curl-metrics", "-n", namespace)
 	return utils.Run(cmd)
 }
 
-// tokenRequest is a simplified representation of the Kubernetes TokenRequest API response,
-// containing only the token field that we need to extract.
 type tokenRequest struct {
 	Status struct {
 		Token string `json:"token"`

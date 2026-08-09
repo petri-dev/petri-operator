@@ -1,7 +1,7 @@
 apiVersion: core.petri.run/v1alpha1
 kind: EnvironmentTemplate
 metadata:
-  name: bad-chart
+  name: PETRI_E2E_TMPL_NAME
   namespace: default
 spec:
   components:
@@ -14,10 +14,10 @@ spec:
 apiVersion: core.petri.run/v1alpha1
 kind: EphemeralEnvironment
 metadata:
-  name: test-s2
+  name: PETRI_E2E_ENV_NAME
   namespace: default
 spec:
-  template: bad-chart
+  template: PETRI_E2E_TMPL_NAME
   source:
-    repo: https://github.com/example/app
+    repo: https://github.com/example/repo
     branch: main
