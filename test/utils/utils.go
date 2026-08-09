@@ -151,7 +151,6 @@ func LoadImageToKindClusterWithName(ctx context.Context, name string) error {
 	return err
 }
 
-// GetNonEmptyLines converts given command output string into individual objects
 func RandomSuffix() string {
 	const chars = "abcdefghijklmnopqrstuvwxyz0123456789"
 	b := make([]byte, 6)
