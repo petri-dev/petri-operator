@@ -1,0 +1,23 @@
+apiVersion: core.petri.run/v1alpha1
+kind: EnvironmentTemplate
+metadata:
+  name: PETRI_E2E_TMPL_NAME
+  namespace: default
+spec:
+  components:
+    - name: broken
+      helm:
+        repo: https://charts.bitnami.com/bitnami
+        chart: this-chart-does-not-exist-xyz
+        version: "999.0.0"
+---
+apiVersion: core.petri.run/v1alpha1
+kind: EphemeralEnvironment
+metadata:
+  name: PETRI_E2E_ENV_NAME
+  namespace: default
+spec:
+  template: PETRI_E2E_TMPL_NAME
+  source:
+    repo: https://github.com/example/repo
+    branch: main

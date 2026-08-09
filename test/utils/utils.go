@@ -21,6 +21,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"math/rand"
 	"os"
 	"os/exec"
 	"strings"
@@ -150,7 +151,15 @@ func LoadImageToKindClusterWithName(ctx context.Context, name string) error {
 	return err
 }
 
-// GetNonEmptyLines converts given command output string into individual objects
+func RandomSuffix() string {
+	const chars = "abcdefghijklmnopqrstuvwxyz0123456789"
+	b := make([]byte, 6)
+	for i := range b {
+		b[i] = chars[rand.Intn(len(chars))]
+	}
+	return string(b)
+}
+
 // according to line breakers, and ignores the empty elements in it.
 func GetNonEmptyLines(output string) []string {
 	var res []string
@@ -164,7 +173,28 @@ func GetNonEmptyLines(output string) []string {
 	return res
 }
 
-// GetProjectDir will return the directory where the project is.
+func PushStubChart(ctx context.Context, registryPort string) string {
+	projectDir, err := GetProjectDir()
+	if err != nil {
+		panic("PushStubChart: GetProjectDir: " + err.Error())
+	}
+
+	chartDir := projectDir + "/test/e2e/testdata/chart"
+	registry := "localhost:" + registryPort
+
+	cmd := exec.CommandContext(ctx, "helm", "package", chartDir, "--destination", "/tmp")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		panic("PushStubChart: helm package failed: " + string(out) + ": " + err.Error())
+	}
+
+	cmd = exec.CommandContext(ctx, "helm", "push", "/tmp/petri-e2e-stub-0.1.0.tgz", //nolint:gosec
+		"oci://"+registry, "--plain-http")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		panic("PushStubChart: helm push failed: " + string(out) + ": " + err.Error())
+	}
+
+	return "oci://petri-e2e-registry:5000/petri-e2e-stub"
+}
 func GetProjectDir() (string, error) {
 	wd, err := os.Getwd()
 	if err != nil {

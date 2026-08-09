@@ -51,7 +51,7 @@ func (r *EphemeralEnvironmentReconciler) processLevel(ctx context.Context, env *
 func partitionLevel(level []v1alpha1.ComponentSpec, phaseByName map[string]v1alpha1.Phase) (needDeploy, submitting, needCheck []v1alpha1.ComponentSpec) {
 	for _, component := range level {
 		switch phaseByName[component.Name] {
-		case v1alpha1.PhaseReady:
+		case v1alpha1.PhaseReady, v1alpha1.PhaseFailed:
 			continue
 		case v1alpha1.PhaseSubmitting:
 			submitting = append(submitting, component)

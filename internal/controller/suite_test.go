@@ -44,6 +44,8 @@ var (
 	testEnv   *envtest.Environment
 	cfg       *rest.Config
 	k8sClient client.Client
+
+	tctx context.Context
 )
 
 func TestControllers(t *testing.T) {

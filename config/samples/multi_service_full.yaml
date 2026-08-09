@@ -1,0 +1,55 @@
+apiVersion: core.petri.run/v1alpha1
+kind: EnvironmentTemplate
+metadata:
+  name: multi-svc-full
+  namespace: default
+spec:
+  ingress:
+    domain: example.com
+  components:
+    - name: postgres
+      helm:
+        repo: https://charts.bitnami.com/bitnami
+        chart: nginx
+        version: "25.0.15"
+      readiness:
+        httpGet:
+          path: /
+          port: 80
+    - name: api
+      dependsOn: [postgres]
+      helm:
+        repo: https://charts.bitnami.com/bitnami
+        chart: nginx
+        version: "25.0.15"
+      readiness:
+        httpGet:
+          path: /
+          port: 80
+    - name: cache
+      dependsOn: [postgres]
+      helm:
+        repo: https://charts.bitnami.com/bitnami
+        chart: nginx
+        version: "25.0.15"
+    - name: frontend
+      dependsOn: [api, cache]
+      helm:
+        repo: https://charts.bitnami.com/bitnami
+        chart: nginx
+        version: "25.0.15"
+      readiness:
+        httpGet:
+          path: /
+          port: 80
+---
+apiVersion: core.petri.run/v1alpha1
+kind: EphemeralEnvironment
+metadata:
+  name: pr-456
+  namespace: default
+spec:
+  template: multi-svc-full
+  source:
+    repo: https://github.com/example/app
+    branch: feature-456

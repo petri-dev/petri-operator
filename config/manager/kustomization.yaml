@@ -15,5 +15,5 @@ generatorOptions:
   disableNameSuffixHash: true
 images:
 - name: controller
-  newName: controller
-  newTag: latest
+  newName: ghcr.io/nuromirg/petri
+  newTag: v0.0.1
