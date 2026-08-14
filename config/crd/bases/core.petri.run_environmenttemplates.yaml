@@ -42,11 +42,32 @@ spec:
             properties:
               components:
                 items:
+                  description: 'ComponentSpec describes one component of an environment.
+                    Exactly one of Helm or SharedComponentRef is set: Helm gets a
+                    per-env release, SharedComponentRef consumes a slice of a shared
+                    instance.'
                   properties:
                     dependsOn:
                       items:
                         type: string
                       type: array
+                    env:
+                      additionalProperties:
+                        properties:
+                          secretKeyRef:
+                            properties:
+                              component:
+                                type: string
+                              key:
+                                type: string
+                            required:
+                            - component
+                            - key
+                            type: object
+                          value:
+                            type: string
+                        x-kubernetes-preserve-unknown-fields: true
+                      type: object
                     helm:
                       properties:
                         chart:
@@ -96,6 +117,8 @@ spec:
                           - port
                           type: object
                       type: object
+                    sharedComponentRef:
+                      type: string
                   required:
                   - name
                   type: object

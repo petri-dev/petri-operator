@@ -2,8 +2,6 @@ package deployer
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"time"
 
@@ -14,26 +12,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
-const (
-	// k8s object names must be a DNS-1123 label: at most 63 chars.
-	maxJobNameLen = 63
-
-	// hash suffix length when a name is too long; 8 hex chars = 32 bits,
-	// enough to avoid collisions between truncated release names.
-	jobNameHashLen = 8
-)
-
 func jobName(op, release string) string {
-	name := "petri-" + op + "-" + release
-	if len(name) <= maxJobNameLen {
-		return name
-	}
-
-	sum := sha256.Sum256([]byte(name))
-	suffix := hex.EncodeToString(sum[:])[:jobNameHashLen]
-
-	prefix := name[:maxJobNameLen-1-jobNameHashLen] // reserve one char for dash
-	return prefix + "-" + suffix
+	return TruncateName("petri-" + op + "-" + release)
 }
 
 func jobLabels(opts DeployOptions, op string) map[string]string {

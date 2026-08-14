@@ -17,6 +17,8 @@ limitations under the License.
 package v1alpha1
 
 import (
+	"encoding/json"
+
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 )
@@ -39,11 +41,49 @@ type HelmGitRef struct {
 	FallbackRef string `json:"fallbackRef,omitempty"` // default: main
 }
 
+// ComponentSpec describes one component of an environment. Exactly one of Helm or SharedComponentRef is set: Helm gets a per-env release, SharedComponentRef consumes a slice of a shared instance.
+// TODO: Helm is the only (for now) deploy strategy today. To add others (kustomize, raw manifests), make this a union (add sibling *KustomizeSpec etc.) and generalize the helm specific ReleaseName in DeployOptions.
 type ComponentSpec struct {
-	Name      string         `json:"name"`
-	Helm      *HelmSpec      `json:"helm,omitempty"`
-	Readiness *ReadinessSpec `json:"readiness,omitempty"`
-	DependsOn []string       `json:"dependsOn,omitempty"`
+	Name               string              `json:"name"`
+	Helm               *HelmSpec           `json:"helm,omitempty"`
+	SharedComponentRef string              `json:"sharedComponentRef,omitempty"`
+	Env                map[string]EnvValue `json:"env,omitempty"`
+	Readiness          *ReadinessSpec      `json:"readiness,omitempty"`
+	DependsOn          []string            `json:"dependsOn,omitempty"`
+}
+
+// EnvValue is either a bare string (rendered into helm values) or a struct with secretKeyRef. The custom UnmarshalJSON handles both, the marker below tells the CRD schema to accept both instead of forcing an object.
+//
+// +kubebuilder:validation:Schemaless
+// +kubebuilder:pruning:PreserveUnknownFields
+// +kubebuilder:validation:Type=""
+
+type EnvValue struct {
+	Value        string        `json:"value,omitempty"`
+	SecretKeyRef *EnvSecretRef `json:"secretKeyRef,omitempty"`
+}
+
+func (e *EnvValue) UnmarshalJSON(data []byte) error {
+	var s string
+	if err := json.Unmarshal(data, &s); err == nil {
+		e.Value = s
+		return nil
+	}
+
+	// alias drops EnvValue method set, so json.Unmarshal falls back to the default struct decoder.
+	type alias EnvValue
+	var a alias
+	if err := json.Unmarshal(data, &a); err != nil {
+		return err
+	}
+
+	*e = EnvValue(a)
+	return nil
+}
+
+type EnvSecretRef struct {
+	Component string `json:"component"`
+	Key       string `json:"key"`
 }
 
 type ReadinessSpec struct {

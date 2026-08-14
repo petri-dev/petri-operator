@@ -17,6 +17,9 @@ limitations under the License.
 package v1alpha1
 
 import (
+	"errors"
+
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 )
@@ -31,9 +34,65 @@ type SharedComponentProviderSpec struct {
 	// The following markers will use OpenAPI v3 schema to validate the value
 	// More info: https://book.kubebuilder.io/reference/markers/crd-validation.html
 
-	// foo is an example field of SharedComponentProvider. Edit sharedcomponentprovider_types.go to remove/update
-	// +optional
-	Foo *string `json:"foo,omitempty"`
+	Helm           *HelmSpec       `json:"helm,omitempty"`
+	InstanceSecret *InstanceSecret `json:"instanceSecret,omitempty"`
+	Provision      *JobScript      `json:"provision,omitempty"`
+	Deprovision    *JobScript      `json:"deprovision,omitempty"`
+	Binding        *Binding        `json:"binding,omitempty"`
+}
+
+type InstanceSecret struct {
+	Name string                 `json:"name"`
+	Keys map[string]InstanceKey `json:"keys"`
+}
+
+// InstanceKey is exactly one of Value (static) or Generate (random).
+// Value is always written from the provider spec on reconcile. Generate is written once and preserved, the random value never rotates under a live instance.
+type InstanceKey struct {
+	Value    string        `json:"value,omitempty"`
+	Generate *GenerateSpec `json:"generate,omitempty"`
+}
+
+type GenerateSpec struct {
+	// +kubebuilder:default=24
+	Length int `json:"length,omitempty"`
+	// alphanumeric avoids symbols that break DSN URLs; use it by default.
+	// +kubebuilder:validation:Enum=alphanumeric;hex
+	// +kubebuilder:default=alphanumeric
+	Charset string `json:"charset,omitempty"`
+}
+
+type JobScript struct {
+	Image string `json:"image"`
+
+	// Exactly one of Script or Command. Script is sugar wrapped as ["/bin/sh","-c",Script] for the common multi-line shell case.
+	// Command is the raw entrypoint for images without a shell (distroless). Validated at reconcile.
+	Script string `json:"script,omitempty"`
+
+	Command []string `json:"command,omitempty"`
+
+	Env          []corev1.EnvVar        `json:"env,omitempty"`
+	EnvFrom      []corev1.EnvFromSource `json:"envFrom,omitempty"`
+	Volumes      []corev1.Volume        `json:"volumes,omitempty"`
+	VolumeMounts []corev1.VolumeMount   `json:"volumeMounts,omitempty"`
+}
+
+func (j *JobScript) Validate() error {
+	hasScript := j.Script != ""
+	hasCommand := len(j.Command) > 0
+	switch {
+	case j.Image == "":
+		return errors.New("jobScript: image is required")
+	case hasScript && hasCommand:
+		return errors.New("jobScript: script and command are mutually exclusive")
+	case !hasScript && !hasCommand:
+		return errors.New("jobScript: one of script or command is required")
+	}
+	return nil
+}
+
+type Binding struct {
+	SecretKeys map[string]string `json:"secretKeys"`
 }
 
 // SharedComponentProviderStatus defines the observed state of SharedComponentProvider.
