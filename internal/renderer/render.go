@@ -46,7 +46,7 @@ func Render(s string, v Vars) (string, error) {
 	return buf.String(), nil
 }
 
-// TODO write a description for the method
+// RenderMap renders every value in a map (binding.secretKeys, helm values).
 func RenderMap(m map[string]string, v Vars) (map[string]string, error) {
 	out := make(map[string]string, len(m))
 	for k, val := range m {

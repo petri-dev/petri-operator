@@ -225,12 +225,12 @@ func (r *SharedComponentReconciler) ensureInstanceSecret(ctx context.Context, sp
 	})
 }
 
-func (r *SharedComponentReconciler) countConsumers(ctx context.Context, name string) int32 {
+func (r *SharedComponentReconciler) countConsumers(ctx context.Context, name string) int {
 	nsList := &corev1.NamespaceList{}
 	if err := r.List(ctx, nsList, client.MatchingLabels{sharedLabel(name): "true"}); err != nil {
 		return 0
 	}
-	return int32(len(nsList.Items))
+	return len(nsList.Items)
 }
 
 func (r *SharedComponentReconciler) reconcileDelete(ctx context.Context, sc *v1alpha1.SharedComponent) (ctrl.Result, error) {

@@ -181,7 +181,7 @@ func main() {
 	// TODO hardcoded, wire to a CRD timeout field in the future
 	deadline := 15 * time.Minute
 
-	deployer := &deployer.JobDeployer{
+	jobDeployer := &deployer.JobDeployer{
 		Client:         mgr.GetClient(),
 		Reader:         mgr.GetAPIReader(),
 		Image:          os.Getenv("PETRI_DEPLOYER_IMAGE"),
@@ -192,7 +192,7 @@ func main() {
 	if err := (&controller.EphemeralEnvironmentReconciler{
 		Client:   mgr.GetClient(),
 		Scheme:   mgr.GetScheme(),
-		Deployer: deployer,
+		Deployer: jobDeployer,
 		Provisioner: &provisioner.JobProvisioner{
 			Client:   mgr.GetClient(),
 			Reader:   mgr.GetAPIReader(),
@@ -206,7 +206,7 @@ func main() {
 	if err := (&controller.SharedComponentReconciler{
 		Client:   mgr.GetClient(),
 		Scheme:   mgr.GetScheme(),
-		Deployer: deployer,
+		Deployer: jobDeployer,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "sharedcomponent")
 		os.Exit(1)

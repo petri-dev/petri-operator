@@ -8,6 +8,7 @@ import (
 )
 
 func TestBuildJob(t *testing.T) {
+	t.Parallel()
 	p := &JobProvisioner{}
 	opts := ProvisionOptions{
 		EnvName:              "pr-1",
@@ -41,6 +42,7 @@ func TestBuildJob(t *testing.T) {
 }
 
 func TestBuildJobCommandForm(t *testing.T) {
+	t.Parallel()
 	p := &JobProvisioner{}
 	opts := ProvisionOptions{
 		EnvName:       "pr-1",
@@ -60,6 +62,7 @@ func TestBuildJobCommandForm(t *testing.T) {
 }
 
 func TestJobNameTruncation(t *testing.T) {
+	t.Parallel()
 	name := jobName(OpDeprovision, "pr-a-very-long-environment-name-that-goes-on", "postgres-component-x")
 	if len(name) > 63 {
 		t.Fatalf("name %q len %d exceeds 63", name, len(name))

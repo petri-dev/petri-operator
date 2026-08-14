@@ -44,7 +44,7 @@ type SharedComponentStatus struct {
 	// +optional
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
 
-	Consumers int32 `json:"consumers,omitempty"`
+	Consumers int   `json:"consumers,omitempty"`
 	Ready     bool  `json:"ready,omitempty"`
 	Phase     Phase `json:"phase,omitempty"`
 }

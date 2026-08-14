@@ -3,6 +3,7 @@ package secretgen
 import "testing"
 
 func TestRandom(t *testing.T) {
+	t.Parallel()
 	s, err := Random(32, "alphanumeric")
 	if err != nil || len(s) != 32 {
 		t.Fatalf("len = %d, err = %v", len(s), err)

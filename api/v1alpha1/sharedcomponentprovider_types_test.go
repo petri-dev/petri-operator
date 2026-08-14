@@ -3,6 +3,7 @@ package v1alpha1
 import "testing"
 
 func TestJobScriptValidate(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name    string
 		js      JobScript
@@ -16,6 +17,7 @@ func TestJobScriptValidate(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
 			if err := c.js.Validate(); (err != nil) != c.wantErr {
 				t.Fatalf("Validate() err = %v, wantErr = %v", err, c.wantErr)
 			}

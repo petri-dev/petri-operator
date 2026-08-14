@@ -2,10 +2,12 @@ package controller
 
 import (
 	"context"
+	"fmt"
 	"sync"
 
 	"github.com/nuromirg/petri/api/v1alpha1"
 	"github.com/nuromirg/petri/internal/deployer"
+	"github.com/nuromirg/petri/internal/provisioner"
 )
 
 type CallEvent struct {
@@ -18,6 +20,7 @@ type fakeDeployer struct {
 
 	outcome      map[string]deployer.JobState
 	observeCount map[string]int
+	submitted    map[string]bool
 
 	calls []CallEvent
 
@@ -31,6 +34,7 @@ func newFakeDeployer() *fakeDeployer {
 	return &fakeDeployer{
 		outcome:         make(map[string]deployer.JobState),
 		observeCount:    make(map[string]int),
+		submitted:       make(map[string]bool),
 		undeployPending: make(map[string]bool),
 		undeployFail:    make(map[string]int),
 		submitErr:       make(map[string]error),
@@ -105,7 +109,10 @@ func (f *fakeDeployer) Submit(_ context.Context, opts deployer.DeployOptions) er
 		return err
 	}
 
-	f.observeCount[opts.ReleaseName] = 0
+	if !f.submitted[opts.ReleaseName] {
+		f.submitted[opts.ReleaseName] = true
+		f.observeCount[opts.ReleaseName] = 0
+	}
 	return nil
 }
 
@@ -186,4 +193,117 @@ func (c *fakeChecker) IsReady(_ context.Context, _ string, releaseName string, r
 		return true, "", nil
 	}
 	return false, "not ready", nil
+}
+
+type fakeProvisioner struct {
+	mu sync.Mutex
+
+	provisionCount    map[string]int
+	deprovisionCount  map[string]int
+	provisionObserved map[string]int
+	deprovObserved    map[string]int
+
+	provisionSubmitted   map[string]bool
+	deprovisionSubmitted map[string]bool
+
+	provisionFail   map[string]error
+	deprovisionFail map[string]error
+}
+
+func newFakeProvisioner() *fakeProvisioner {
+	return &fakeProvisioner{
+		provisionCount:       make(map[string]int),
+		deprovisionCount:     make(map[string]int),
+		provisionObserved:    make(map[string]int),
+		deprovObserved:       make(map[string]int),
+		provisionSubmitted:   make(map[string]bool),
+		deprovisionSubmitted: make(map[string]bool),
+		provisionFail:        make(map[string]error),
+		deprovisionFail:      make(map[string]error),
+	}
+}
+
+func provKey(envName, componentName string) string {
+	return fmt.Sprintf("%s/%s", envName, componentName)
+}
+
+func (f *fakeProvisioner) ProvisionCount(envName, componentName string) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.provisionCount[provKey(envName, componentName)]
+}
+
+func (f *fakeProvisioner) DeprovisionCount(envName, componentName string) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.deprovisionCount[provKey(envName, componentName)]
+}
+
+func (f *fakeProvisioner) setProvisionFail(envName, componentName string, err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.provisionFail[provKey(envName, componentName)] = err
+}
+
+func (f *fakeProvisioner) SubmitProvision(_ context.Context, opts provisioner.ProvisionOptions) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	k := provKey(opts.EnvName, opts.ComponentName)
+	if err := f.provisionFail[k]; err != nil {
+		return err
+	}
+	f.provisionCount[k]++
+	if !f.provisionSubmitted[k] {
+		f.provisionSubmitted[k] = true
+		f.provisionObserved[k] = 0
+	}
+	return nil
+}
+
+func (f *fakeProvisioner) ObserveProvision(_ context.Context, opts provisioner.ProvisionOptions) (deployer.JobState, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	k := provKey(opts.EnvName, opts.ComponentName)
+	if err := f.provisionFail[k]; err != nil {
+		return deployer.JobState{Phase: deployer.FailedJobPhase, Reason: err.Error()}, nil
+	}
+	if f.provisionCount[k] == 0 {
+		return deployer.JobState{Phase: deployer.PendingJobPhase}, nil
+	}
+	n := f.provisionObserved[k]
+	f.provisionObserved[k] = n + 1
+	if n == 0 {
+		return deployer.JobState{Phase: deployer.PendingJobPhase}, nil
+	}
+	return deployer.JobState{Phase: deployer.SucceededJobPhase}, nil
+}
+
+func (f *fakeProvisioner) SubmitDeprovision(_ context.Context, opts provisioner.ProvisionOptions) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	k := provKey(opts.EnvName, opts.ComponentName)
+	if err := f.deprovisionFail[k]; err != nil {
+		return err
+	}
+	f.deprovisionCount[k]++
+	if !f.deprovisionSubmitted[k] {
+		f.deprovisionSubmitted[k] = true
+		f.deprovObserved[k] = 0
+	}
+	return nil
+}
+
+func (f *fakeProvisioner) ObserveDeprovision(_ context.Context, opts provisioner.ProvisionOptions) (deployer.JobState, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	k := provKey(opts.EnvName, opts.ComponentName)
+	if f.deprovisionCount[k] == 0 {
+		return deployer.JobState{Phase: deployer.PendingJobPhase}, nil
+	}
+	n := f.deprovObserved[k]
+	f.deprovObserved[k] = n + 1
+	if n == 0 {
+		return deployer.JobState{Phase: deployer.PendingJobPhase}, nil
+	}
+	return deployer.JobState{Phase: deployer.SucceededJobPhase}, nil
 }

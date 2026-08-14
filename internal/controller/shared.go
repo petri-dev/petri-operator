@@ -98,7 +98,7 @@ func (r *EphemeralEnvironmentReconciler) submitShared(ctx context.Context, env *
 			if err := r.List(ctx, nsList, client.MatchingLabels{sharedLabel(sc.Name): "true"}); err != nil {
 				return err
 			}
-			if int32(len(nsList.Items)) >= sc.Spec.MaxConsumers {
+			if len(nsList.Items) >= int(sc.Spec.MaxConsumers) {
 				return errAtCapacity
 			}
 		}

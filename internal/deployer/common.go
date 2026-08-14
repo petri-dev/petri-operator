@@ -9,7 +9,7 @@ const (
 	// k8s object names must be a DNS-1123 label: at most 63 chars.
 	MaxJobNameLen = 63
 
-	// hash suffix length when a name is too long
+	// hash suffix length when a name is too long.
 	JobNameHashLen = 8
 )
 

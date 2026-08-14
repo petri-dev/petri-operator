@@ -62,11 +62,16 @@ func reconcileUntilGone(r *EphemeralEnvironmentReconciler, key types.NamespacedN
 }
 
 func newReconciler(fd *fakeDeployer, fc *fakeChecker) *EphemeralEnvironmentReconciler {
+	return newReconcilerWithProvisioner(fd, newFakeProvisioner(), fc)
+}
+
+func newReconcilerWithProvisioner(fd *fakeDeployer, fp *fakeProvisioner, fc *fakeChecker) *EphemeralEnvironmentReconciler {
 	return &EphemeralEnvironmentReconciler{
-		Client:   k8sClient,
-		Scheme:   scheme.Scheme,
-		Deployer: fd,
-		Checker:  fc,
+		Client:      k8sClient,
+		Scheme:      scheme.Scheme,
+		Deployer:    fd,
+		Provisioner: fp,
+		Checker:     fc,
 	}
 }
 
@@ -522,6 +527,298 @@ var _ = Describe("EphemeralEnvironment Controller", func() {
 
 			gone := &corev1alpha1.EphemeralEnvironment{}
 			err := k8sClient.Get(tctx, key, gone)
+			Expect(err).To(HaveOccurred())
+		})
+	})
+})
+
+func makeTemplateWithShared(ns, name, scRef string) {
+	makeTemplate(ns, name, []corev1alpha1.ComponentSpec{
+		{Name: "redis", SharedComponentRef: scRef},
+		{Name: "api", Helm: helmSpec(), DependsOn: []string{"redis"}},
+	})
+}
+
+func makeReadySC(ns, name, provider string) types.NamespacedName {
+	key := makeSC(ns, name, provider, 0)
+	sc := &corev1alpha1.SharedComponent{}
+	Expect(k8sClient.Get(tctx, key, sc)).To(Succeed())
+	patch := sc.DeepCopy()
+	patch.Status.Ready = true
+	Expect(k8sClient.Status().Update(tctx, patch)).To(Succeed())
+	return key
+}
+
+func makeReadySCWithMax(ns, name, provider string, maxConsumers int32) types.NamespacedName {
+	key := makeSC(ns, name, provider, maxConsumers)
+	sc := &corev1alpha1.SharedComponent{}
+	Expect(k8sClient.Get(tctx, key, sc)).To(Succeed())
+	patch := sc.DeepCopy()
+	patch.Status.Ready = true
+	Expect(k8sClient.Status().Update(tctx, patch)).To(Succeed())
+	return key
+}
+
+var _ = Describe("EphemeralEnvironment shared component integration", func() {
+	var (
+		testNS  string
+		counter int
+	)
+
+	BeforeEach(func() {
+		tctx = context.Background()
+		counter++
+		testNS = fmt.Sprintf("ee-sc-%04d", counter)
+		Expect(k8sClient.Create(tctx, &corev1.Namespace{
+			ObjectMeta: metav1.ObjectMeta{Name: testNS},
+		})).To(Succeed())
+		ensureSharedNamespace()
+	})
+
+	Context("provision happy path", func() {
+		It("provision Succeeded -> binding Secret in env ns, component Ready, api deploy submitted", func() {
+			fd := newFakeDeployer()
+			fp := newFakeProvisioner()
+			fc := newFakeChecker()
+			r := newReconcilerWithProvisioner(fd, fp, fc)
+
+			scp := &corev1alpha1.SharedComponentProvider{
+				ObjectMeta: metav1.ObjectMeta{Name: "prov", Namespace: testNS},
+				Spec: corev1alpha1.SharedComponentProviderSpec{
+					Helm: helmSpec(),
+					Provision: &corev1alpha1.JobScript{
+						Image:  "alpine",
+						Script: "echo provision",
+					},
+				},
+			}
+			Expect(k8sClient.Create(tctx, scp)).To(Succeed())
+			makeReadySC(testNS, "redis", "prov")
+			makeTemplateWithShared(testNS, "tmpl", "redis")
+
+			envName := testNS + "-e"
+			apiRelease := envName + "-api"
+			fd.setOutcome(apiRelease, deployer.SucceededJobPhase, "")
+			fc.setReady(apiRelease, true)
+
+			key := makeEnv(testNS, envName, "tmpl")
+			targetNs := nsPrefix + envName
+
+			phase := reconcileUntilTerminal(r, key, 30)
+			Expect(phase).To(Equal(corev1alpha1.PhaseReady))
+
+			bindingName := envName + "-redis-binding"
+			binding := &corev1.Secret{}
+			Expect(k8sClient.Get(tctx, types.NamespacedName{
+				Name:      bindingName,
+				Namespace: targetNs,
+			}, binding)).To(Succeed())
+
+			Expect(binding.Data).To(HaveKey(generatedSecretKey))
+			Expect(binding.Data[generatedSecretKey]).NotTo(BeEmpty())
+
+			Expect(fp.ProvisionCount(envName, "redis")).To(BeNumerically(">=", 1))
+
+			Expect(fd.SubmitCount(apiRelease)).To(Equal(1))
+		})
+	})
+
+	Context("provision failure", func() {
+		It("env reaches Failed after maxDeployRetries exhausted", func() {
+			fd := newFakeDeployer()
+			fp := newFakeProvisioner()
+			fc := newFakeChecker()
+			r := newReconcilerWithProvisioner(fd, fp, fc)
+
+			scp := &corev1alpha1.SharedComponentProvider{
+				ObjectMeta: metav1.ObjectMeta{Name: "prov-fail", Namespace: testNS},
+				Spec: corev1alpha1.SharedComponentProviderSpec{
+					Helm: helmSpec(),
+					Provision: &corev1alpha1.JobScript{
+						Image:  "alpine",
+						Script: "echo provision",
+					},
+				},
+			}
+			Expect(k8sClient.Create(tctx, scp)).To(Succeed())
+			makeReadySC(testNS, "redis-fail", "prov-fail")
+			makeTemplate(testNS, "tmpl", []corev1alpha1.ComponentSpec{
+				{Name: "redis", SharedComponentRef: "redis-fail"},
+			})
+
+			envName := testNS + "-e"
+			fp.setProvisionFail(envName, "redis", errors.New("injected provision failure"))
+
+			key := makeEnv(testNS, envName, "tmpl")
+			phase := reconcileUntilTerminal(r, key, 60)
+			Expect(phase).To(Equal(corev1alpha1.PhaseFailed))
+		})
+	})
+
+	Context("nil provision (redis-like, no Provision field)", func() {
+		It("component Ready immediately, no provision submitted, binding Secret created", func() {
+			fd := newFakeDeployer()
+			fp := newFakeProvisioner()
+			fc := newFakeChecker()
+			r := newReconcilerWithProvisioner(fd, fp, fc)
+
+			makeProvider(testNS, "prov-nil", false)
+			makeReadySC(testNS, "cache", "prov-nil")
+			makeTemplate(testNS, "tmpl", []corev1alpha1.ComponentSpec{
+				{Name: "cache", SharedComponentRef: "cache"},
+				{Name: "api", Helm: helmSpec(), DependsOn: []string{"cache"}},
+			})
+
+			envName := testNS + "-e"
+			apiRelease := envName + "-api"
+			fd.setOutcome(apiRelease, deployer.SucceededJobPhase, "")
+			fc.setReady(apiRelease, true)
+
+			key := makeEnv(testNS, envName, "tmpl")
+			targetNs := nsPrefix + envName
+
+			phase := reconcileUntilTerminal(r, key, 20)
+			Expect(phase).To(Equal(corev1alpha1.PhaseReady))
+
+			Expect(fp.ProvisionCount(envName, "cache")).To(Equal(0))
+
+			binding := &corev1.Secret{}
+			Expect(k8sClient.Get(tctx, types.NamespacedName{
+				Name:      envName + "-cache-binding",
+				Namespace: targetNs,
+			}, binding)).To(Succeed())
+			Expect(binding.Data).To(HaveKey(generatedSecretKey))
+		})
+	})
+
+	Context("SharedComponent not Ready gates env", func() {
+		It("env stays Deploying, no binding Secret created", func() {
+			fd := newFakeDeployer()
+			fp := newFakeProvisioner()
+			fc := newFakeChecker()
+			r := newReconcilerWithProvisioner(fd, fp, fc)
+
+			makeProvider(testNS, "prov", false)
+
+			// SC exists but NOT ready
+			scKey := makeSC(testNS, "redis-notready", "prov", 0)
+			sc := &corev1alpha1.SharedComponent{}
+			Expect(k8sClient.Get(tctx, scKey, sc)).To(Succeed())
+
+			envName := testNS + "-e"
+			makeTemplate(testNS, "tmpl", []corev1alpha1.ComponentSpec{
+				{Name: "redis", SharedComponentRef: "redis-notready"},
+				{Name: "api", Helm: helmSpec(), DependsOn: []string{"redis"}},
+			})
+
+			key := makeEnv(testNS, envName, "tmpl")
+			targetNs := nsPrefix + envName
+
+			phase := reconcileUntilTerminal(r, key, 5)
+			Expect(phase).To(Equal(corev1alpha1.PhaseDeploying))
+
+			binding := &corev1.Secret{}
+			err := k8sClient.Get(tctx, types.NamespacedName{
+				Name:      envName + "-redis-binding",
+				Namespace: targetNs,
+			}, binding)
+			Expect(err).To(HaveOccurred())
+
+			Expect(fd.SubmitCount(envName + "-api")).To(Equal(0))
+		})
+	})
+
+	Context("maxConsumers=1 sequential", func() {
+		It("first env provisions, second env fails with SharedComponentAtCapacity", func() {
+			fd := newFakeDeployer()
+			fp := newFakeProvisioner()
+			fc := newFakeChecker()
+			r := newReconcilerWithProvisioner(fd, fp, fc)
+
+			makeProvider(testNS, "prov", false)
+			makeReadySCWithMax(testNS, "redis-max", "prov", 1)
+
+			makeTemplate(testNS, "tmpl", []corev1alpha1.ComponentSpec{
+				{Name: "redis", SharedComponentRef: "redis-max"},
+				{Name: "api", Helm: helmSpec(), DependsOn: []string{"redis"}},
+			})
+
+			envA := testNS + "-a"
+			apiRelease1 := envA + "-api"
+			fd.setOutcome(apiRelease1, deployer.SucceededJobPhase, "")
+			fc.setReady(apiRelease1, true)
+			key1 := makeEnv(testNS, envA, "tmpl")
+
+			phase1 := reconcileUntilTerminal(r, key1, 30)
+			Expect(phase1).To(Equal(corev1alpha1.PhaseReady))
+
+			envB := testNS + "-b"
+			key2 := makeEnv(testNS, envB, "tmpl")
+
+			phase2 := reconcileUntilTerminal(r, key2, 10)
+			Expect(phase2).To(Equal(corev1alpha1.PhaseFailed))
+
+			env2 := getEnv(key2)
+			Expect(failureReason(env2)).To(Equal("SharedComponentAtCapacity"))
+		})
+	})
+
+	Context("deprovision on delete", func() {
+		It("deprovision submitted before namespace deleted, binding Secret deleted", func() {
+			fd := newFakeDeployer()
+			fp := newFakeProvisioner()
+			fc := newFakeChecker()
+			r := newReconcilerWithProvisioner(fd, fp, fc)
+
+			scp := &corev1alpha1.SharedComponentProvider{
+				ObjectMeta: metav1.ObjectMeta{Name: "prov-deprov", Namespace: testNS},
+				Spec: corev1alpha1.SharedComponentProviderSpec{
+					Helm: helmSpec(),
+					Provision: &corev1alpha1.JobScript{
+						Image:  "alpine",
+						Script: "echo provision",
+					},
+					Deprovision: &corev1alpha1.JobScript{
+						Image:  "alpine",
+						Script: "echo deprovision",
+					},
+				},
+			}
+			Expect(k8sClient.Create(tctx, scp)).To(Succeed())
+
+			makeReadySC(testNS, "redis-deprov", "prov-deprov")
+
+			envName := testNS + "-e"
+			makeTemplate(testNS, "tmpl", []corev1alpha1.ComponentSpec{
+				{Name: "redis", SharedComponentRef: "redis-deprov"},
+				{Name: "api", Helm: helmSpec(), DependsOn: []string{"redis"}},
+			})
+
+			apiRelease := envName + "-api"
+			fd.setOutcome(apiRelease, deployer.SucceededJobPhase, "")
+			fc.setReady(apiRelease, true)
+
+			key := makeEnv(testNS, envName, "tmpl")
+			targetNs := nsPrefix + envName
+
+			phase := reconcileUntilTerminal(r, key, 30)
+			Expect(phase).To(Equal(corev1alpha1.PhaseReady))
+
+			binding := &corev1.Secret{}
+			Expect(k8sClient.Get(tctx, types.NamespacedName{
+				Name:      envName + "-redis-binding",
+				Namespace: targetNs,
+			}, binding)).To(Succeed())
+
+			Expect(k8sClient.Delete(tctx, getEnv(key))).To(Succeed())
+			reconcileUntilGone(r, key, 30)
+
+			Expect(fp.DeprovisionCount(envName, "redis")).To(BeNumerically(">=", 1))
+
+			err := k8sClient.Get(tctx, types.NamespacedName{
+				Name:      envName + "-redis-binding",
+				Namespace: targetNs,
+			}, binding)
 			Expect(err).To(HaveOccurred())
 		})
 	})

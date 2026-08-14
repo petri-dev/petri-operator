@@ -10,6 +10,7 @@ import "testing"
  */
 
 func TestRender(t *testing.T) {
+	t.Parallel()
 	v := Vars{Env: EnvVars{Name: "pr-1", GeneratedSecret: "abc123"}}
 
 	got, err := Render("db-{{.Env.Name}}-{{.Env.GeneratedSecret}}", v)
@@ -17,7 +18,6 @@ func TestRender(t *testing.T) {
 		t.Fatalf("got %q err %v", got, err)
 	}
 
-	// unknown key must error, not silently blank
 	if _, err := Render("{{.Env.Nope}}", v); err == nil {
 		t.Fatal("expected error on unknown key")
 	}
