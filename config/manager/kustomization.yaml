@@ -6,7 +6,7 @@ resources:
 
 configMapGenerator:
 - literals:
-  - image=petri-deployer:latest
+  - image=petri-deployer:dev
   name: deployer-image
   options:
     disableNameSuffixHash: true
@@ -15,5 +15,5 @@ generatorOptions:
   disableNameSuffixHash: true
 images:
 - name: controller
-  newName: ghcr.io/nuromirg/petri
-  newTag: v0.0.1
+  newName: petri-operator
+  newTag: dev

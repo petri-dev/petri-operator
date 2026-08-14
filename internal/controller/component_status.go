@@ -43,6 +43,12 @@ func setComponentPhase(env *v1alpha1.EphemeralEnvironment, name string, phase v1
 	})
 }
 
+func setComponentShared(env *v1alpha1.EphemeralEnvironment, name string) {
+	if cs := findComponent(env, name); cs != nil {
+		cs.Shared = true
+	}
+}
+
 func recordRuntimeFailure(env *v1alpha1.EphemeralEnvironment, name, reason string) (exhausted bool) {
 	if cs := findComponent(env, name); cs != nil {
 		cs.DeployRetries++

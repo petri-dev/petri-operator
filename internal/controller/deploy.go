@@ -18,6 +18,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -68,14 +69,50 @@ func (r *EphemeralEnvironmentReconciler) submitDeploys(ctx context.Context, env 
 	log := logf.FromContext(ctx)
 	log.Info("deploying components", "components", componentNames(needDeploy))
 
+	template, err := r.getEnvironmentTemplate(ctx, env)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	components, err := r.bindingComponents(ctx, env, targetNs, template)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+
 	submitErrs := r.eachComponent(ctx, needDeploy, func(gctx context.Context, _ int, c v1alpha1.ComponentSpec) error {
-		return r.Deployer.Submit(gctx, r.deployOpts(env, targetNs, c))
+		if c.SharedComponentRef != "" {
+			return r.submitShared(gctx, env, targetNs, c)
+		}
+		rendered, err := renderConsumerValues(env, c, components)
+		if err != nil {
+			return err
+		}
+		return r.Deployer.Submit(gctx, r.deployOpts(env, targetNs, rendered))
 	})
 
 	exhausted := false
 	stillRetrying := false
+	notReady := false
 	for i, component := range needDeploy {
-		if submitErrs[i] == nil {
+		err := submitErrs[i]
+		if component.SharedComponentRef != "" {
+			switch {
+			case err == nil:
+			case errors.Is(err, errSharedNotReady):
+				notReady = true
+			case errors.Is(err, errAtCapacity):
+				setComponentPhase(env, component.Name, v1alpha1.PhaseFailed)
+				return ctrl.Result{}, r.setFailed(env, "SharedComponentAtCapacity", component.Name)
+			default:
+				if recordRuntimeFailure(env, component.Name, err.Error()) {
+					setComponentPhase(env, component.Name, v1alpha1.PhaseFailed)
+					exhausted = true
+				} else {
+					stillRetrying = true
+				}
+			}
+			continue
+		}
+		if err == nil {
 			// deploy Job submitted; wait for it via Observe on the next pass
 			setComponentPhase(env, component.Name, v1alpha1.PhaseSubmitting)
 			resetComponentFailure(env, component.Name)
@@ -98,6 +135,10 @@ func (r *EphemeralEnvironmentReconciler) submitDeploys(ctx context.Context, env 
 	if stillRetrying {
 		return ctrl.Result{RequeueAfter: deployBackoff(env, needDeploy)}, nil
 	}
+	if notReady {
+		return ctrl.Result{RequeueAfter: requeueAfter}, nil
+	}
+
 	return ctrl.Result{RequeueAfter: requeueAfter}, nil
 }
 
@@ -107,6 +148,17 @@ func (r *EphemeralEnvironmentReconciler) observeDeploys(ctx context.Context, env
 	stillRunning := false
 	retrying := false
 	for _, component := range submitting {
+		if component.SharedComponentRef != "" {
+			done, err := r.observeShared(ctx, env, component)
+			if err != nil {
+				return ctrl.Result{}, true, err
+			}
+			if !done {
+				stillRunning = true
+			}
+			continue
+		}
+
 		st, err := r.Deployer.Observe(ctx, r.deployOpts(env, targetNs, component))
 		if err != nil {
 			return ctrl.Result{}, true, err

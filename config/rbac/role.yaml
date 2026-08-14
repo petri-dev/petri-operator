@@ -8,12 +8,12 @@ rules:
   - ""
   resources:
   - namespaces
-  - serviceaccounts
   verbs:
   - create
   - delete
   - get
   - list
+  - patch
   - watch
 - apiGroups:
   - ""
@@ -22,6 +22,28 @@ rules:
   verbs:
   - get
   - list
+- apiGroups:
+  - ""
+  resources:
+  - secrets
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - ""
+  resources:
+  - serviceaccounts
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - watch
 - apiGroups:
   - ""
   resources:
@@ -50,9 +72,18 @@ rules:
   - list
   - watch
 - apiGroups:
+  - coordination.k8s.io
+  resources:
+  - leases
+  verbs:
+  - create
+  - delete
+  - get
+- apiGroups:
   - core.petri.run
   resources:
   - environmenttemplates
+  - sharedcomponentproviders
   verbs:
   - get
   - list

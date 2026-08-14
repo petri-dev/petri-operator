@@ -26,6 +26,7 @@ import (
 	corev1alpha1 "github.com/nuromirg/petri/api/v1alpha1"
 	"github.com/nuromirg/petri/internal/controller"
 	"github.com/nuromirg/petri/internal/deployer"
+	"github.com/nuromirg/petri/internal/provisioner"
 	"github.com/nuromirg/petri/internal/readiness"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
@@ -177,16 +178,25 @@ func main() {
 		os.Exit(1)
 	}
 
+	// TODO hardcoded, wire to a CRD timeout field in the future
+	deadline := 15 * time.Minute
+
+	deployer := &deployer.JobDeployer{
+		Client:         mgr.GetClient(),
+		Reader:         mgr.GetAPIReader(),
+		Image:          os.Getenv("PETRI_DEPLOYER_IMAGE"),
+		ServiceAccount: cmp.Or(os.Getenv("PETRI_DEPLOYER_SA"), "petri-deployer"),
+		Deadline:       deadline,
+	}
+
 	if err := (&controller.EphemeralEnvironmentReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
-		Deployer: &deployer.JobDeployer{
-			Client:         mgr.GetClient(),
-			Reader:         mgr.GetAPIReader(),
-			Image:          os.Getenv("PETRI_DEPLOYER_IMAGE"),
-			ServiceAccount: cmp.Or(os.Getenv("PETRI_DEPLOYER_SA"), "petri-deployer"),
-			// TODO hardcoded, wire to a CRD timeout field in the future
-			Deadline: 15 * time.Minute,
+		Client:   mgr.GetClient(),
+		Scheme:   mgr.GetScheme(),
+		Deployer: deployer,
+		Provisioner: &provisioner.JobProvisioner{
+			Client:   mgr.GetClient(),
+			Reader:   mgr.GetAPIReader(),
+			Deadline: deadline,
 		},
 		Checker: readiness.NewChecker(mgr.GetClient()),
 	}).SetupWithManager(mgr); err != nil {
@@ -194,8 +204,9 @@ func main() {
 		os.Exit(1)
 	}
 	if err := (&controller.SharedComponentReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
+		Client:   mgr.GetClient(),
+		Scheme:   mgr.GetScheme(),
+		Deployer: deployer,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "sharedcomponent")
 		os.Exit(1)

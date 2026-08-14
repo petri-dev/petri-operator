@@ -39,25 +39,22 @@ spec:
           spec:
             description: spec defines the desired state of SharedComponent
             properties:
-              foo:
-                description: foo is an example field of SharedComponent. Edit sharedcomponent_types.go
-                  to remove/update
+              idleCleanup:
                 type: string
+              maxConsumers:
+                format: int32
+                type: integer
+              provider:
+                type: string
+            required:
+            - provider
             type: object
           status:
             description: status defines the observed state of SharedComponent
             properties:
               conditions:
-                description: |-
-                  conditions represent the current state of the SharedComponent resource.
-                  Each condition has a unique type and reflects the status of a specific aspect of the resource.
-
-                  Standard condition types include:
-                  - "Available": the resource is fully functional
-                  - "Progressing": the resource is being created or updated
-                  - "Degraded": the resource failed to reach or maintain its desired state
-
-                  The status of each condition is one of True, False, or Unknown.
+                description: The status of each condition is one of True, False, or
+                  Unknown.
                 items:
                   description: Condition contains details for one aspect of the current
                     state of this API Resource.
@@ -116,6 +113,13 @@ spec:
                 x-kubernetes-list-map-keys:
                 - type
                 x-kubernetes-list-type: map
+              consumers:
+                format: int32
+                type: integer
+              phase:
+                type: string
+              ready:
+                type: boolean
             type: object
         required:
         - spec

@@ -27,6 +27,8 @@ import (
 	"github.com/nuromirg/petri/internal/deployer"
 	"github.com/nuromirg/petri/internal/graph"
 	"github.com/nuromirg/petri/internal/helpers"
+	"github.com/nuromirg/petri/internal/provisioner"
+	"github.com/nuromirg/petri/internal/renderer"
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -70,16 +72,19 @@ type checker interface {
 // EphemeralEnvironmentReconciler reconciles a EphemeralEnvironment object.
 type EphemeralEnvironmentReconciler struct {
 	client.Client
-	Scheme   *runtime.Scheme
-	Deployer deployer.Deployer
-	Checker  checker
+	Scheme      *runtime.Scheme
+	Deployer    deployer.Deployer
+	Provisioner provisioner.Provisioner
+	Checker     checker
 }
 
 // +kubebuilder:rbac:groups=core.petri.run,resources=ephemeralenvironments,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=core.petri.run,resources=ephemeralenvironments/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=core.petri.run,resources=ephemeralenvironments/finalizers,verbs=update
 // +kubebuilder:rbac:groups=core.petri.run,resources=environmenttemplates,verbs=get;list;watch
-// +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;list;watch;create;delete
+// +kubebuilder:rbac:groups=core.petri.run,resources=sharedcomponentproviders,verbs=get;list;watch
+// +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;list;watch;create;delete;patch
 // +kubebuilder:rbac:groups="",resources=serviceaccounts,verbs=get;list;watch;create;delete
 // +kubebuilder:rbac:groups=apps,resources=deployments;statefulsets,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=services,verbs=get;list;watch
@@ -87,6 +92,7 @@ type EphemeralEnvironmentReconciler struct {
 // +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=clusterroles,verbs=bind,resourceNames=admin
 // +kubebuilder:rbac:groups="",resources=pods,verbs=get;list
 // +kubebuilder:rbac:groups=batch,resources=jobs,verbs=get;list;watch;create;delete
+// +kubebuilder:rbac:groups=coordination.k8s.io,resources=leases,verbs=get;create;delete
 
 func (r *EphemeralEnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	env := new(v1alpha1.EphemeralEnvironment)
@@ -223,6 +229,17 @@ func (r *EphemeralEnvironmentReconciler) reconcileDelete(ctx context.Context, en
 		if !done {
 			return res, nil
 		}
+
+		done, res, err = r.deprovisionShared(ctx, env, targetNs, template)
+		if err != nil {
+			log.Error(err, "deprovision shared failed")
+			return ctrl.Result{}, err
+		}
+		if !done {
+			log.Info("deprovision shared in progress, requeuing")
+			return res, nil
+		}
+		log.Info("deprovision shared complete")
 	}
 
 	ns := &corev1.Namespace{}
@@ -242,6 +259,123 @@ func (r *EphemeralEnvironmentReconciler) reconcileDelete(ctx context.Context, en
 	}
 
 	return ctrl.Result{}, r.removeFinalizer(ctx, env)
+}
+
+func (r *EphemeralEnvironmentReconciler) deprovisionShared(ctx context.Context, env *v1alpha1.EphemeralEnvironment, targetNs string, template *v1alpha1.EnvironmentTemplate) (done bool, res ctrl.Result, err error) {
+	log := logf.FromContext(ctx)
+
+	for _, component := range template.Spec.Components {
+		if component.SharedComponentRef == "" {
+			continue
+		}
+
+		sc := new(v1alpha1.SharedComponent)
+		if err := r.Get(ctx, client.ObjectKey{Name: component.SharedComponentRef, Namespace: env.Namespace}, sc); err != nil {
+			if apierrors.IsNotFound(err) {
+				continue
+			}
+
+			return false, ctrl.Result{}, err
+		}
+
+		scp := new(v1alpha1.SharedComponentProvider)
+		if err := r.Get(ctx, client.ObjectKey{Name: sc.Spec.Provider, Namespace: env.Namespace}, scp); err != nil {
+			if apierrors.IsNotFound(err) {
+				continue
+			}
+			return false, ctrl.Result{}, err
+		}
+
+		provName := "shared-" + sc.Name + "-provision-" + env.Name
+		bindingName := env.Name + "-" + component.Name + "-binding"
+
+		if scp.Spec.Deprovision == nil {
+			if err := r.deleteSecret(ctx, bindingName, targetNs); err != nil {
+				return false, ctrl.Result{}, err
+			}
+			continue
+		}
+
+		binding := new(corev1.Secret)
+		if err := r.Get(ctx, client.ObjectKey{Name: bindingName, Namespace: targetNs}, binding); err != nil && !apierrors.IsNotFound(err) {
+			return false, ctrl.Result{}, err
+		}
+		genSecret := string(binding.Data[generatedSecretKey])
+
+		if err := r.ensureProvisionSecret(ctx, provName, env.Name, genSecret); err != nil {
+			return false, ctrl.Result{}, err
+		}
+
+		state, err := r.Provisioner.ObserveDeprovision(ctx, provisioner.ProvisionOptions{
+			EnvName:       env.Name,
+			ComponentName: component.Name,
+			SharedName:    sc.Name,
+		})
+		if err != nil {
+			return false, ctrl.Result{}, err
+		}
+
+		switch state.Phase {
+		case deployer.SucceededJobPhase:
+			deprovJobName := provisioner.DeprovisionJobName(env.Name, component.Name)
+			if err := r.deleteJob(ctx, deprovJobName, sharedNamespace); err != nil {
+				return false, ctrl.Result{}, err
+			}
+			if err := r.deleteSecret(ctx, provName, sharedNamespace); err != nil {
+				return false, ctrl.Result{}, err
+			}
+			if err := r.deleteSecret(ctx, bindingName, targetNs); err != nil {
+				return false, ctrl.Result{}, err
+			}
+
+		case deployer.PendingJobPhase, deployer.FailedJobPhase:
+			script := *scp.Spec.Deprovision
+			deprovVars := renderer.Vars{Env: renderer.EnvVarsFor(env.Name, genSecret)}
+			if script.Script != "" {
+				rendered, err := renderer.Render(script.Script, deprovVars)
+				if err != nil {
+					return false, ctrl.Result{}, fmt.Errorf("render deprovision script: %w", err)
+				}
+				script.Script = rendered
+			}
+			for i, c := range script.Command {
+				rendered, err := renderer.Render(c, deprovVars)
+				if err != nil {
+					return false, ctrl.Result{}, fmt.Errorf("render deprovision command[%d]: %w", i, err)
+				}
+				script.Command[i] = rendered
+			}
+
+			if err := r.Provisioner.SubmitDeprovision(ctx, provisioner.ProvisionOptions{
+				EnvName:              env.Name,
+				ComponentName:        component.Name,
+				SharedName:           sc.Name,
+				Script:               script,
+				ProvisionerSecretRef: provName,
+			}); err != nil {
+				return false, ctrl.Result{}, err
+			}
+
+			if state.Phase == deployer.FailedJobPhase {
+				if recordRuntimeFailure(env, component.Name, "deprovision: "+state.Reason) {
+					log.Error(errors.New(state.Reason), "deprovision exhausted retries, forcing cleanup", "component", component.Name)
+					if err := r.deleteSecret(ctx, provName, sharedNamespace); err != nil {
+						return false, ctrl.Result{}, err
+					}
+					if err := r.deleteSecret(ctx, bindingName, targetNs); err != nil {
+						return false, ctrl.Result{}, err
+					}
+					continue
+				}
+			}
+			return false, ctrl.Result{RequeueAfter: requeueAfter}, nil
+
+		case deployer.RunningJobPhase:
+			return false, ctrl.Result{RequeueAfter: requeueAfter}, nil
+		}
+	}
+
+	return true, ctrl.Result{}, nil
 }
 
 func (r *EphemeralEnvironmentReconciler) ensureDeployerRoleBinding(ctx context.Context, targetNs string) error {
