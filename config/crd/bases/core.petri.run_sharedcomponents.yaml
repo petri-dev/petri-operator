@@ -114,7 +114,6 @@ spec:
                 - type
                 x-kubernetes-list-type: map
               consumers:
-                format: int32
                 type: integer
               phase:
                 type: string

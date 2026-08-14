@@ -119,6 +119,11 @@ func (r *EphemeralEnvironmentReconciler) submitDeploys(ctx context.Context, env 
 			continue
 		}
 
+		if errors.Is(err, errSharedNotReady) {
+			notReady = true
+			continue
+		}
+
 		if recordRuntimeFailure(env, component.Name, submitErrs[i].Error()) {
 			log.Error(submitErrs[i], "component deploy failed permanently", "component", component.Name)
 			setComponentPhase(env, component.Name, v1alpha1.PhaseFailed)

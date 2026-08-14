@@ -71,9 +71,10 @@ type JobScript struct {
 
 	Command []string `json:"command,omitempty"`
 
-	Env     []corev1.EnvVar        `json:"env,omitempty"`
-	EnvFrom []corev1.EnvFromSource `json:"envFrom,omitempty"`
-	Volumes []corev1.Volume        `json:"volumes,omitempty"`
+	Env          []corev1.EnvVar        `json:"env,omitempty"`
+	EnvFrom      []corev1.EnvFromSource `json:"envFrom,omitempty"`
+	Volumes      []corev1.Volume        `json:"volumes,omitempty"`
+	VolumeMounts []corev1.VolumeMount   `json:"volumeMounts,omitempty"`
 }
 
 func (j *JobScript) Validate() error {

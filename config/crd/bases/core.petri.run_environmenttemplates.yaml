@@ -42,10 +42,10 @@ spec:
             properties:
               components:
                 items:
-                  description: |-
-                    ComponentSpec describes one component of an environment. Exactly one of Helm or SharedComponentRef is set: Helm gets a per-env release, SharedComponentRef consumes
-                    a slice of a shared instance.
-                    helm-specific ReleaseName in DeployOptions.
+                  description: 'ComponentSpec describes one component of an environment.
+                    Exactly one of Helm or SharedComponentRef is set: Helm gets a
+                    per-env release, SharedComponentRef consumes a slice of a shared
+                    instance.'
                   properties:
                     dependsOn:
                       items:

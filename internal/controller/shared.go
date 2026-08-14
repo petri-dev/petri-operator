@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/nuromirg/petri/api/v1alpha1"
 	"github.com/nuromirg/petri/internal/deployer"
@@ -29,6 +30,24 @@ var (
 func (r *EphemeralEnvironmentReconciler) acquireProvisionLease(ctx context.Context, scName, scNamespace, holderEnvName string) (acquired bool, err error) {
 	leaseDuration := int32(30)
 	now := metav1.NewMicroTime(metav1.Now().Time)
+	leaseKey := client.ObjectKey{Name: "petri-provision-" + scName, Namespace: scNamespace}
+
+	existing := &coordinationv1.Lease{}
+	if err := r.Get(ctx, leaseKey, existing); err == nil {
+		if existing.Spec.LeaseDurationSeconds != nil && existing.Spec.RenewTime != nil {
+			expiry := existing.Spec.RenewTime.Add(time.Duration(*existing.Spec.LeaseDurationSeconds) * time.Second)
+			if metav1.Now().After(expiry) {
+				if delErr := r.Delete(ctx, existing); delErr != nil && !apierrors.IsNotFound(delErr) {
+					return false, delErr
+				}
+			} else {
+				return false, nil
+			}
+		} else {
+			return false, nil
+		}
+	}
+
 	lease := &coordinationv1.Lease{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "petri-provision-" + scName,
@@ -112,6 +131,16 @@ func (r *EphemeralEnvironmentReconciler) submitShared(ctx context.Context, env *
 		return fmt.Errorf("get binding secret: %w", err)
 	}
 
+	instance := map[string]string{}
+	if scp.Spec.InstanceSecret != nil {
+		is := new(corev1.Secret)
+		if err := r.Get(ctx, client.ObjectKey{Name: scp.Spec.InstanceSecret.Name, Namespace: sharedNamespace}, is); err == nil {
+			for k, v := range is.Data {
+				instance[k] = string(v)
+			}
+		}
+	}
+
 	var genSecret string
 	if err == nil {
 		genSecret = string(binding.Data[generatedSecretKey])
@@ -119,16 +148,6 @@ func (r *EphemeralEnvironmentReconciler) submitShared(ctx context.Context, env *
 		genSecret, err = secretgen.Random(24, "alphanumeric")
 		if err != nil {
 			return err
-		}
-
-		instance := map[string]string{}
-		if scp.Spec.InstanceSecret != nil {
-			is := new(corev1.Secret)
-			if err := r.Get(ctx, client.ObjectKey{Name: scp.Spec.InstanceSecret.Name, Namespace: sharedNamespace}, is); err == nil {
-				for k, v := range is.Data {
-					instance[k] = string(v)
-				}
-			}
 		}
 
 		vars := renderer.Vars{Env: renderer.EnvVarsFor(env.Name, genSecret), Instance: instance}
@@ -151,14 +170,17 @@ func (r *EphemeralEnvironmentReconciler) submitShared(ctx context.Context, env *
 		}
 	}
 
-	if err := r.labelConsumer(ctx, targetNs, sc.Name); err != nil {
-		return err
-	}
-
 	if scp.Spec.Provision == nil {
+		if err := r.labelConsumer(ctx, targetNs, sc.Name); err != nil {
+			return err
+		}
 		setComponentPhase(env, component.Name, v1alpha1.PhaseReady)
 		setComponentShared(env, component.Name)
 		return nil
+	}
+
+	if err := scp.Spec.Provision.Validate(); err != nil {
+		return fmt.Errorf("invalid provision script: %w", err)
 	}
 
 	provName := "shared-" + sc.Name + "-provision-" + env.Name
@@ -167,7 +189,8 @@ func (r *EphemeralEnvironmentReconciler) submitShared(ctx context.Context, env *
 	}
 
 	script := *scp.Spec.Provision
-	renderVars := renderer.Vars{Env: renderer.EnvVarsFor(env.Name, genSecret)}
+	script.Command = append([]string(nil), scp.Spec.Provision.Command...)
+	renderVars := renderer.Vars{Env: renderer.EnvVarsFor(env.Name, genSecret), Instance: instance}
 	if script.Script != "" {
 		rendered, err := renderer.Render(script.Script, renderVars)
 		if err != nil {
@@ -190,6 +213,10 @@ func (r *EphemeralEnvironmentReconciler) submitShared(ctx context.Context, env *
 		Script:               script,
 		ProvisionerSecretRef: provName,
 	}); err != nil {
+		return err
+	}
+
+	if err := r.labelConsumer(ctx, targetNs, sc.Name); err != nil {
 		return err
 	}
 
@@ -280,6 +307,15 @@ func renderConsumerValues(env *v1alpha1.EphemeralEnvironment, c v1alpha1.Compone
 		return c, nil
 	}
 
+	// if any SecretKeyRef component isn't provisioned yet, wait rather than burning deploy retries.
+	for _, ev := range c.Env {
+		if ev.SecretKeyRef != nil {
+			if _, ok := components[ev.SecretKeyRef.Component]; !ok {
+				return c, errSharedNotReady
+			}
+		}
+	}
+
 	out := c.DeepCopy()
 	if out.Helm.Values == nil {
 		out.Helm.Values = map[string]string{}
@@ -298,6 +334,9 @@ func renderConsumerValues(env *v1alpha1.EphemeralEnvironment, c v1alpha1.Compone
 	for _, ev := range c.Env {
 		if ev.SecretKeyRef != nil {
 			bindingName := env.Name + "-" + ev.SecretKeyRef.Component + "-binding"
+			if existing, ok := out.Helm.Values["extraEnvVarsSecret"]; ok && existing != bindingName {
+				return c, fmt.Errorf("component %s: multiple SecretKeyRef entries require different binding secrets (%q, %q); extraEnvVarsSecret only supports one", c.Name, existing, bindingName)
+			}
 			out.Helm.Values["extraEnvVarsSecret"] = bindingName
 		}
 	}

@@ -300,7 +300,10 @@ func (r *EphemeralEnvironmentReconciler) deprovisionShared(ctx context.Context, 
 		if err := r.Get(ctx, client.ObjectKey{Name: bindingName, Namespace: targetNs}, binding); err != nil && !apierrors.IsNotFound(err) {
 			return false, ctrl.Result{}, err
 		}
-		genSecret := string(binding.Data[generatedSecretKey])
+		var genSecret string
+		if binding.Data != nil {
+			genSecret = string(binding.Data[generatedSecretKey])
+		}
 
 		if err := r.ensureProvisionSecret(ctx, provName, env.Name, genSecret); err != nil {
 			return false, ctrl.Result{}, err
@@ -329,7 +332,11 @@ func (r *EphemeralEnvironmentReconciler) deprovisionShared(ctx context.Context, 
 			}
 
 		case deployer.PendingJobPhase, deployer.FailedJobPhase:
+			if err := scp.Spec.Deprovision.Validate(); err != nil {
+				return false, ctrl.Result{}, fmt.Errorf("invalid deprovision script: %w", err)
+			}
 			script := *scp.Spec.Deprovision
+			script.Command = append([]string(nil), scp.Spec.Deprovision.Command...)
 			deprovVars := renderer.Vars{Env: renderer.EnvVarsFor(env.Name, genSecret)}
 			if script.Script != "" {
 				rendered, err := renderer.Render(script.Script, deprovVars)

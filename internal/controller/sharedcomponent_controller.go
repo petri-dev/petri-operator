@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 
 	"github.com/nuromirg/petri/api/v1alpha1"
 	"github.com/nuromirg/petri/internal/deployer"
@@ -233,6 +234,8 @@ func (r *SharedComponentReconciler) countConsumers(ctx context.Context, name str
 	return len(nsList.Items)
 }
 
+const uninstallRetriesAnnotation = "petri.run/uninstall-retries"
+
 func (r *SharedComponentReconciler) reconcileDelete(ctx context.Context, sc *v1alpha1.SharedComponent) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 
@@ -256,7 +259,29 @@ func (r *SharedComponentReconciler) reconcileDelete(ctx context.Context, sc *v1a
 	}
 
 	switch state.Phase {
-	case deployer.PendingJobPhase, deployer.FailedJobPhase:
+	case deployer.PendingJobPhase:
+		if err := r.Deployer.SubmitUndeploy(ctx, opts); err != nil {
+			return ctrl.Result{}, err
+		}
+		return ctrl.Result{RequeueAfter: requeueAfter}, nil
+	case deployer.FailedJobPhase:
+		retries, _ := strconv.Atoi(sc.Annotations[uninstallRetriesAnnotation])
+		retries++
+		log.Info("shared component uninstall job failed", "retries", retries, "maxRetries", maxDeployRetries)
+		if retries >= maxDeployRetries {
+			log.Error(errors.New(state.Reason), "uninstall exhausted retries, forcing finalizer removal", "component", sc.Name)
+			patch := client.MergeFrom(sc.DeepCopy())
+			controllerutil.RemoveFinalizer(sc, sharedFinalizer)
+			return ctrl.Result{}, r.Patch(ctx, sc, patch)
+		}
+		patch := client.MergeFrom(sc.DeepCopy())
+		if sc.Annotations == nil {
+			sc.Annotations = map[string]string{}
+		}
+		sc.Annotations[uninstallRetriesAnnotation] = strconv.Itoa(retries)
+		if err := r.Patch(ctx, sc, patch); err != nil {
+			return ctrl.Result{}, err
+		}
 		if err := r.Deployer.SubmitUndeploy(ctx, opts); err != nil {
 			return ctrl.Result{}, err
 		}
