@@ -23,7 +23,7 @@ import (
 	"testing"
 	"time"
 
-	corev1alpha1 "github.com/nuromirg/petri/api/v1alpha1"
+	corev1alpha1 "github.com/petri-dev/petri-operator/api/v1alpha1"
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
 	"sigs.k8s.io/controller-runtime/pkg/client"

@@ -3,8 +3,8 @@ package provisioner
 import (
 	"context"
 
-	"github.com/nuromirg/petri/api/v1alpha1"
-	"github.com/nuromirg/petri/internal/deployer"
+	"github.com/petri-dev/petri-operator/api/v1alpha1"
+	"github.com/petri-dev/petri-operator/internal/deployer"
 )
 
 type Provisioner interface {

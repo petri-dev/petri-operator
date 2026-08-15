@@ -7,7 +7,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/nuromirg/petri/internal/deployer"
+	"github.com/petri-dev/petri-operator/internal/deployer"
 )
 
 func main() {

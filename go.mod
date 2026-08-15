@@ -1,4 +1,4 @@
-module github.com/nuromirg/petri
+module github.com/petri-dev/petri-operator
 
 go 1.26.0
 

@@ -22,8 +22,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/nuromirg/petri/api/v1alpha1"
-	"github.com/nuromirg/petri/internal/deployer"
+	"github.com/petri-dev/petri-operator/api/v1alpha1"
+	"github.com/petri-dev/petri-operator/internal/deployer"
 	"golang.org/x/sync/errgroup"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	ctrl "sigs.k8s.io/controller-runtime"

@@ -3,7 +3,7 @@ package provisioner
 import (
 	"testing"
 
-	"github.com/nuromirg/petri/api/v1alpha1"
+	"github.com/petri-dev/petri-operator/api/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
 )
 

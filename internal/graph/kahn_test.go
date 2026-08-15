@@ -4,8 +4,8 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/nuromirg/petri/api/v1alpha1"
-	"github.com/nuromirg/petri/internal/graph"
+	"github.com/petri-dev/petri-operator/api/v1alpha1"
+	"github.com/petri-dev/petri-operator/internal/graph"
 )
 
 func comp(name string, deps ...string) v1alpha1.ComponentSpec {

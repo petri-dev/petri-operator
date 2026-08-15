@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/nuromirg/petri/api/v1alpha1"
-	"github.com/nuromirg/petri/internal/deployer"
-	"github.com/nuromirg/petri/internal/provisioner"
+	"github.com/petri-dev/petri-operator/api/v1alpha1"
+	"github.com/petri-dev/petri-operator/internal/deployer"
+	"github.com/petri-dev/petri-operator/internal/provisioner"
 )
 
 type CallEvent struct {

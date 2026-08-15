@@ -3,7 +3,7 @@ package graph
 import (
 	"errors"
 
-	"github.com/nuromirg/petri/api/v1alpha1"
+	"github.com/petri-dev/petri-operator/api/v1alpha1"
 )
 
 var ErrCycleDependencies = errors.New("cycle dependencies found")

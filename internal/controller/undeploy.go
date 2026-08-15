@@ -20,9 +20,9 @@ import (
 	"context"
 	"errors"
 
-	"github.com/nuromirg/petri/api/v1alpha1"
-	"github.com/nuromirg/petri/internal/deployer"
-	"github.com/nuromirg/petri/internal/graph"
+	"github.com/petri-dev/petri-operator/api/v1alpha1"
+	"github.com/petri-dev/petri-operator/internal/deployer"
+	"github.com/petri-dev/petri-operator/internal/graph"
 	ctrl "sigs.k8s.io/controller-runtime"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 )
