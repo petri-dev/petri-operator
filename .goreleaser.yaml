@@ -106,9 +106,6 @@ archives:
     ids: [operator]
     name_template: petri-operator_{{.Version}}_{{.Os}}_{{.Arch}}
 
-extra_files:
-  - glob: dist/crds.yaml
-
 changelog:
   sort: asc
   filters:
@@ -122,3 +119,5 @@ changelog:
 release:
   draft: true
   name_template: "v{{.Version}}"
+  extra_files:
+    - glob: dist/crds.yaml
