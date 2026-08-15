@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"time"
 
 	"github.com/petri-dev/petri-operator/api/v1alpha1"
@@ -307,8 +308,11 @@ func renderConsumerValues(env *v1alpha1.EphemeralEnvironment, c v1alpha1.Compone
 		return c, nil
 	}
 
-	// if any SecretKeyRef component isn't provisioned yet, wait rather than burning deploy retries.
-	for _, ev := range c.Env {
+	effectiveEnv := make(map[string]v1alpha1.EnvValue, len(c.Env)+len(env.Spec.Env))
+	maps.Copy(effectiveEnv, c.Env)
+	maps.Copy(effectiveEnv, env.Spec.Env)
+
+	for _, ev := range effectiveEnv {
 		if ev.SecretKeyRef != nil {
 			if _, ok := components[ev.SecretKeyRef.Component]; !ok {
 				return c, errSharedNotReady
@@ -317,6 +321,8 @@ func renderConsumerValues(env *v1alpha1.EphemeralEnvironment, c v1alpha1.Compone
 	}
 
 	out := c.DeepCopy()
+	out.Env = effectiveEnv
+
 	if out.Helm.Values == nil {
 		out.Helm.Values = map[string]string{}
 	}
@@ -329,9 +335,11 @@ func renderConsumerValues(env *v1alpha1.EphemeralEnvironment, c v1alpha1.Compone
 	if err != nil {
 		return c, fmt.Errorf("render helm values for %s: %w", c.Name, err)
 	}
+
+	maps.Copy(rendered, env.Spec.Values)
 	out.Helm.Values = rendered
 
-	for _, ev := range c.Env {
+	for _, ev := range out.Env {
 		if ev.SecretKeyRef != nil {
 			bindingName := env.Name + "-" + ev.SecretKeyRef.Component + "-binding"
 			if existing, ok := out.Helm.Values["extraEnvVarsSecret"]; ok && existing != bindingName {
