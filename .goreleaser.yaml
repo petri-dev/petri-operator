@@ -31,34 +31,77 @@ builds:
       - -X github.com/petri-dev/petri-operator/internal/version.Version={{.Version}}
       - -X github.com/petri-dev/petri-operator/internal/version.Commit={{.Commit}}
 
-dockers_v2:
-  - id: operator
+dockers:
+  - id: operator-amd64
     ids: [operator]
+    use: buildx
     image_templates:
-      - ghcr.io/petri-dev/petri-operator:{{.Tag}}
-      - ghcr.io/petri-dev/petri-operator:latest
+      - ghcr.io/petri-dev/petri-operator:{{.Tag}}-amd64
     build_flag_templates:
       - --build-arg=BIN=operator
+      - --platform=linux/amd64
       - --label=org.opencontainers.image.version={{.Version}}
       - --label=org.opencontainers.image.revision={{.Commit}}
       - --label=org.opencontainers.image.source=https://github.com/petri-dev/petri-operator
-    platforms:
-      - linux/amd64
-      - linux/arm64
 
-  - id: deployer
-    ids: [deployer]
+  - id: operator-arm64
+    ids: [operator]
+    use: buildx
+    goarch: arm64
     image_templates:
-      - ghcr.io/petri-dev/petri-deployer:{{.Tag}}
-      - ghcr.io/petri-dev/petri-deployer:latest
+      - ghcr.io/petri-dev/petri-operator:{{.Tag}}-arm64
+    build_flag_templates:
+      - --build-arg=BIN=operator
+      - --platform=linux/arm64
+      - --label=org.opencontainers.image.version={{.Version}}
+      - --label=org.opencontainers.image.revision={{.Commit}}
+      - --label=org.opencontainers.image.source=https://github.com/petri-dev/petri-operator
+
+  - id: deployer-amd64
+    ids: [deployer]
+    use: buildx
+    image_templates:
+      - ghcr.io/petri-dev/petri-deployer:{{.Tag}}-amd64
     build_flag_templates:
       - --build-arg=BIN=deployer
+      - --platform=linux/amd64
       - --label=org.opencontainers.image.version={{.Version}}
       - --label=org.opencontainers.image.revision={{.Commit}}
       - --label=org.opencontainers.image.source=https://github.com/petri-dev/petri-operator
-    platforms:
-      - linux/amd64
-      - linux/arm64
+
+  - id: deployer-arm64
+    ids: [deployer]
+    use: buildx
+    goarch: arm64
+    image_templates:
+      - ghcr.io/petri-dev/petri-deployer:{{.Tag}}-arm64
+    build_flag_templates:
+      - --build-arg=BIN=deployer
+      - --platform=linux/arm64
+      - --label=org.opencontainers.image.version={{.Version}}
+      - --label=org.opencontainers.image.revision={{.Commit}}
+      - --label=org.opencontainers.image.source=https://github.com/petri-dev/petri-operator
+
+docker_manifests:
+  - name_template: ghcr.io/petri-dev/petri-operator:{{.Tag}}
+    image_templates:
+      - ghcr.io/petri-dev/petri-operator:{{.Tag}}-amd64
+      - ghcr.io/petri-dev/petri-operator:{{.Tag}}-arm64
+
+  - name_template: ghcr.io/petri-dev/petri-operator:latest
+    image_templates:
+      - ghcr.io/petri-dev/petri-operator:{{.Tag}}-amd64
+      - ghcr.io/petri-dev/petri-operator:{{.Tag}}-arm64
+
+  - name_template: ghcr.io/petri-dev/petri-deployer:{{.Tag}}
+    image_templates:
+      - ghcr.io/petri-dev/petri-deployer:{{.Tag}}-amd64
+      - ghcr.io/petri-dev/petri-deployer:{{.Tag}}-arm64
+
+  - name_template: ghcr.io/petri-dev/petri-deployer:latest
+    image_templates:
+      - ghcr.io/petri-dev/petri-deployer:{{.Tag}}-amd64
+      - ghcr.io/petri-dev/petri-deployer:{{.Tag}}-arm64
 
 archives:
   - id: operator
