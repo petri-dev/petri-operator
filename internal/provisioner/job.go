@@ -4,7 +4,7 @@ import (
 	"context"
 	"time"
 
-	"github.com/nuromirg/petri/internal/deployer"
+	"github.com/petri-dev/petri-operator/internal/deployer"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"

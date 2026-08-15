@@ -19,7 +19,7 @@ package controller
 import (
 	"time"
 
-	"github.com/nuromirg/petri/api/v1alpha1"
+	"github.com/petri-dev/petri-operator/api/v1alpha1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 

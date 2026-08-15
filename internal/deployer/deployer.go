@@ -3,7 +3,7 @@ package deployer
 import (
 	"context"
 
-	"github.com/nuromirg/petri/api/v1alpha1"
+	"github.com/petri-dev/petri-operator/api/v1alpha1"
 )
 
 type JobPhase string

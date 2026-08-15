@@ -31,7 +31,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
-	"github.com/nuromirg/petri/test/utils"
+	"github.com/petri-dev/petri-operator/test/utils"
 )
 
 const namespace = "petri-system"

@@ -6,7 +6,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/nuromirg/petri/api/v1alpha1"
+	"github.com/petri-dev/petri-operator/api/v1alpha1"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
