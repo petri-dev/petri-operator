@@ -6,7 +6,7 @@ before:
   hooks:
     - go mod tidy
     - make manifests generate
-    - bash -c 'mkdir -p dist && kustomize build config/crd > dist/crds.yaml'
+    - bash -c 'kustomize build config/crd > /tmp/crds.yaml'
 
 builds:
   - id: operator
@@ -31,75 +31,34 @@ builds:
       - -X github.com/petri-dev/petri-operator/internal/version.Version={{.Version}}
       - -X github.com/petri-dev/petri-operator/internal/version.Commit={{.Commit}}
 
-dockers:
-  - id: operator-amd64
+dockers_v2:
+  - id: operator
     ids: [operator]
     image_templates:
-      - ghcr.io/petri-dev/petri-operator:{{.Tag}}-amd64
-      - ghcr.io/petri-dev/petri-operator:latest-amd64
+      - ghcr.io/petri-dev/petri-operator:{{.Tag}}
+      - ghcr.io/petri-dev/petri-operator:latest
     build_flag_templates:
       - --build-arg=BIN=operator
-      - --platform=linux/amd64
       - --label=org.opencontainers.image.version={{.Version}}
       - --label=org.opencontainers.image.revision={{.Commit}}
       - --label=org.opencontainers.image.source=https://github.com/petri-dev/petri-operator
+    platforms:
+      - linux/amd64
+      - linux/arm64
 
-  - id: operator-arm64
-    ids: [operator]
-    image_templates:
-      - ghcr.io/petri-dev/petri-operator:{{.Tag}}-arm64
-      - ghcr.io/petri-dev/petri-operator:latest-arm64
-    build_flag_templates:
-      - --build-arg=BIN=operator
-      - --platform=linux/arm64
-      - --label=org.opencontainers.image.version={{.Version}}
-      - --label=org.opencontainers.image.revision={{.Commit}}
-      - --label=org.opencontainers.image.source=https://github.com/petri-dev/petri-operator
-
-  - id: deployer-amd64
+  - id: deployer
     ids: [deployer]
     image_templates:
-      - ghcr.io/petri-dev/petri-deployer:{{.Tag}}-amd64
-      - ghcr.io/petri-dev/petri-deployer:latest-amd64
+      - ghcr.io/petri-dev/petri-deployer:{{.Tag}}
+      - ghcr.io/petri-dev/petri-deployer:latest
     build_flag_templates:
       - --build-arg=BIN=deployer
-      - --platform=linux/amd64
       - --label=org.opencontainers.image.version={{.Version}}
       - --label=org.opencontainers.image.revision={{.Commit}}
       - --label=org.opencontainers.image.source=https://github.com/petri-dev/petri-operator
-
-  - id: deployer-arm64
-    ids: [deployer]
-    image_templates:
-      - ghcr.io/petri-dev/petri-deployer:{{.Tag}}-arm64
-      - ghcr.io/petri-dev/petri-deployer:latest-arm64
-    build_flag_templates:
-      - --build-arg=BIN=deployer
-      - --platform=linux/arm64
-      - --label=org.opencontainers.image.version={{.Version}}
-      - --label=org.opencontainers.image.revision={{.Commit}}
-      - --label=org.opencontainers.image.source=https://github.com/petri-dev/petri-operator
-
-docker_manifests:
-  - name_template: ghcr.io/petri-dev/petri-operator:{{.Tag}}
-    image_templates:
-      - ghcr.io/petri-dev/petri-operator:{{.Tag}}-amd64
-      - ghcr.io/petri-dev/petri-operator:{{.Tag}}-arm64
-
-  - name_template: ghcr.io/petri-dev/petri-operator:latest
-    image_templates:
-      - ghcr.io/petri-dev/petri-operator:latest-amd64
-      - ghcr.io/petri-dev/petri-operator:latest-arm64
-
-  - name_template: ghcr.io/petri-dev/petri-deployer:{{.Tag}}
-    image_templates:
-      - ghcr.io/petri-dev/petri-deployer:{{.Tag}}-amd64
-      - ghcr.io/petri-dev/petri-deployer:{{.Tag}}-arm64
-
-  - name_template: ghcr.io/petri-dev/petri-deployer:latest
-    image_templates:
-      - ghcr.io/petri-dev/petri-deployer:latest-amd64
-      - ghcr.io/petri-dev/petri-deployer:latest-arm64
+    platforms:
+      - linux/amd64
+      - linux/arm64
 
 archives:
   - id: operator
@@ -120,4 +79,4 @@ release:
   draft: true
   name_template: "v{{.Version}}"
   extra_files:
-    - glob: dist/crds.yaml
+    - glob: /tmp/crds.yaml
