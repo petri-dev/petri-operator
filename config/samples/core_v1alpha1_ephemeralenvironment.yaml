@@ -18,3 +18,12 @@ spec:
   source:
     repo: https://github.com/example/app
     branch: feature-123
+    sha: abc1234
+  values:
+    image.tag: pr-123-abc1234
+  env:
+    FEATURE_X: "true"
+    DB_PASSWORD:
+      secretKeyRef:
+        component: postgres
+        key: PGPASSWORD

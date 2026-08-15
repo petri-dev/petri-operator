@@ -50,6 +50,23 @@ spec:
           spec:
             description: spec defines the desired state of EphemeralEnvironment
             properties:
+              env:
+                additionalProperties:
+                  properties:
+                    secretKeyRef:
+                      properties:
+                        component:
+                          type: string
+                        key:
+                          type: string
+                      required:
+                      - component
+                      - key
+                      type: object
+                    value:
+                      type: string
+                  x-kubernetes-preserve-unknown-fields: true
+                type: object
               namespace:
                 type: string
               source:
@@ -68,6 +85,10 @@ spec:
                 type: string
               ttl:
                 type: string
+              values:
+                additionalProperties:
+                  type: string
+                type: object
             required:
             - source
             - template
