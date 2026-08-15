@@ -6,12 +6,6 @@ import (
 	"github.com/petri-dev/petri-operator/api/v1alpha1"
 )
 
-func env(name string) *v1alpha1.EphemeralEnvironment {
-	e := &v1alpha1.EphemeralEnvironment{}
-	e.Name = name
-	return e
-}
-
 func helmComponent(name string, values map[string]string, env map[string]v1alpha1.EnvValue) v1alpha1.ComponentSpec {
 	return v1alpha1.ComponentSpec{
 		Name: name,
@@ -27,6 +21,7 @@ func secretVal(component, key string) v1alpha1.EnvValue {
 }
 
 func TestRenderConsumerValues_SpecValuesOverrideTemplate(t *testing.T) {
+	t.Parallel()
 	e := &v1alpha1.EphemeralEnvironment{}
 	e.Name = "pr-42"
 	e.Spec.Values = map[string]string{"image.tag": "pr-42-abc", "replicaCount": "2"}
@@ -46,6 +41,7 @@ func TestRenderConsumerValues_SpecValuesOverrideTemplate(t *testing.T) {
 }
 
 func TestRenderConsumerValues_SpecEnvOverrideTemplate(t *testing.T) {
+	t.Parallel()
 	e := &v1alpha1.EphemeralEnvironment{}
 	e.Name = "pr-42"
 	e.Spec.Env = map[string]v1alpha1.EnvValue{"FEATURE_X": strVal("true")}
@@ -65,6 +61,7 @@ func TestRenderConsumerValues_SpecEnvOverrideTemplate(t *testing.T) {
 }
 
 func TestRenderConsumerValues_TemplateValuesKeptWhenNoOverride(t *testing.T) {
+	t.Parallel()
 	e := &v1alpha1.EphemeralEnvironment{}
 	e.Name = "pr-42"
 
@@ -80,6 +77,7 @@ func TestRenderConsumerValues_TemplateValuesKeptWhenNoOverride(t *testing.T) {
 }
 
 func TestRenderConsumerValues_SpecEnvSecretKeyRefWaitsIfNotProvisioned(t *testing.T) {
+	t.Parallel()
 	e := &v1alpha1.EphemeralEnvironment{}
 	e.Name = "pr-42"
 	e.Spec.Env = map[string]v1alpha1.EnvValue{"DB_PASS": secretVal("postgres", "PGPASSWORD")}
@@ -93,6 +91,7 @@ func TestRenderConsumerValues_SpecEnvSecretKeyRefWaitsIfNotProvisioned(t *testin
 }
 
 func TestRenderConsumerValues_SpecEnvSecretKeyRefProceeds(t *testing.T) {
+	t.Parallel()
 	e := &v1alpha1.EphemeralEnvironment{}
 	e.Name = "pr-42"
 	e.Spec.Env = map[string]v1alpha1.EnvValue{"DB_PASS": secretVal("postgres", "PGPASSWORD")}
@@ -110,6 +109,7 @@ func TestRenderConsumerValues_SpecEnvSecretKeyRefProceeds(t *testing.T) {
 }
 
 func TestRenderConsumerValues_NonHelmComponentPassthrough(t *testing.T) {
+	t.Parallel()
 	e := &v1alpha1.EphemeralEnvironment{}
 	e.Name = "pr-42"
 	e.Spec.Values = map[string]string{"image.tag": "pr-42-abc"}
