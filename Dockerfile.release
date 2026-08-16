@@ -1,0 +1,6 @@
+FROM gcr.io/distroless/static:nonroot
+WORKDIR /
+ARG BIN=operator
+COPY ${BIN} /app
+USER 65532:65532
+ENTRYPOINT ["/app"]
