@@ -6,7 +6,7 @@ before:
   hooks:
     - go mod tidy
     - make manifests generate
-    - bash -c 'kustomize build config/crd > /tmp/crds.yaml'
+    - bash -c 'kustomize build config/crd > crds.yaml'
 
 builds:
   - id: operator
@@ -126,4 +126,4 @@ release:
   draft: true
   name_template: "v{{.Version}}"
   extra_files:
-    - glob: /tmp/crds.yaml
+    - glob: crds.yaml
