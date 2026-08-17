@@ -77,9 +77,6 @@ spec:
                     type: string
                   sha:
                     type: string
-                required:
-                - branch
-                - repo
                 type: object
               template:
                 type: string
@@ -90,7 +87,6 @@ spec:
                   type: string
                 type: object
             required:
-            - source
             - template
             type: object
           status:
