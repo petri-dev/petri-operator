@@ -34,8 +34,9 @@ const (
 
 // EphemeralEnvironmentSpec defines the desired state of EphemeralEnvironment.
 type EphemeralEnvironmentSpec struct {
-	Template  string              `json:"template"`
-	Source    SourceSpec          `json:"source"`
+	Template string `json:"template"`
+	// +optional
+	Source    SourceSpec          `json:"source,omitempty"`
 	Values    map[string]string   `json:"values,omitempty"`
 	Env       map[string]EnvValue `json:"env,omitempty"`
 	Namespace string              `json:"namespace,omitempty"`
@@ -43,9 +44,12 @@ type EphemeralEnvironmentSpec struct {
 }
 
 type SourceSpec struct {
-	Repo   string `json:"repo"`
-	Branch string `json:"branch"`
-	SHA    string `json:"sha,omitempty"`
+	// +optional
+	Repo string `json:"repo,omitempty"`
+	// +optional
+	Branch string `json:"branch,omitempty"`
+	// +optional
+	SHA string `json:"sha,omitempty"`
 }
 
 type ComponentStatus struct {
