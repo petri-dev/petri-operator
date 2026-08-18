@@ -67,8 +67,6 @@ spec:
                       type: string
                   x-kubernetes-preserve-unknown-fields: true
                 type: object
-              namespace:
-                type: string
               source:
                 properties:
                   branch:

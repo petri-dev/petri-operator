@@ -36,11 +36,10 @@ const (
 type EphemeralEnvironmentSpec struct {
 	Template string `json:"template"`
 	// +optional
-	Source    SourceSpec          `json:"source,omitempty"`
-	Values    map[string]string   `json:"values,omitempty"`
-	Env       map[string]EnvValue `json:"env,omitempty"`
-	Namespace string              `json:"namespace,omitempty"`
-	TTL       string              `json:"ttl,omitempty"`
+	Source SourceSpec          `json:"source,omitempty"`
+	Values map[string]string   `json:"values,omitempty"`
+	Env    map[string]EnvValue `json:"env,omitempty"`
+	TTL    string              `json:"ttl,omitempty"`
 }
 
 type SourceSpec struct {

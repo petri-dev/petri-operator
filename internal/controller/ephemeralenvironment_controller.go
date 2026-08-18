@@ -459,12 +459,7 @@ func (r *EphemeralEnvironmentReconciler) getEnvironmentTemplate(ctx context.Cont
 }
 
 func (r *EphemeralEnvironmentReconciler) targetNamespace(env *v1alpha1.EphemeralEnvironment) (string, error) {
-	suffix := env.Name
-	if env.Spec.Namespace != "" {
-		suffix = env.Spec.Namespace
-	}
-
-	ns := nsPrefix + suffix
+	ns := nsPrefix + env.Name
 	if errs := validation.IsDNS1123Label(ns); errs != nil {
 		return "", fmt.Errorf("invalid namespace %q: %s", ns, strings.Join(errs, ", "))
 	}
