@@ -1,5 +1,8 @@
 # petri
 
+> [!WARNING]
+> Petri is still under active development. Proper documentation for the early versions will be available soon. APIs and behavior may change in the meantime.
+
 A Kubernetes operator that creates and manages ephemeral environments on demand, tearing them down when no longer needed. A common use case is spinning up a full stack for every pull request and automatically cleaning it up on merge.
 
 ## Description
@@ -11,12 +14,14 @@ The operator runs without any prerequisites beyond a Kubernetes cluster. Environ
 ## Getting Started
 
 ### Prerequisites
+
 - go version v1.24.6+
 - docker version 17.03+.
 - kubectl version v1.11.3+.
 - Access to a Kubernetes v1.11.3+ cluster.
 
 ### To Deploy on the cluster
+
 **Build and push your image to the location specified by `IMG`:**
 
 ```sh
@@ -40,7 +45,7 @@ make deploy IMG=<some-registry>/petri:tag
 ```
 
 > **NOTE**: If you encounter RBAC errors, you may need to grant yourself cluster-admin
-privileges or be logged in as admin.
+> privileges or be logged in as admin.
 
 **Create instances of your solution**
 You can apply the samples (examples) from the config/sample:
@@ -49,9 +54,10 @@ You can apply the samples (examples) from the config/sample:
 kubectl apply -k config/samples/
 ```
 
->**NOTE**: Ensure that the samples has default values to test it out.
+> **NOTE**: Ensure that the samples has default values to test it out.
 
 ### To Uninstall
+
 **Delete the instances (CRs) from the cluster:**
 
 ```sh
@@ -105,7 +111,7 @@ kubebuilder edit --plugins=helm/v2-alpha
 ```
 
 2. See that a chart was generated under 'dist/chart', and users
-can obtain this solution from there.
+   can obtain this solution from there.
 
 **NOTE:** If you change the project, you need to update the Helm Chart
 using the same command above to sync the latest changes. Furthermore,
