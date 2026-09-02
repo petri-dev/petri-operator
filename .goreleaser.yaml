@@ -1,6 +1,7 @@
 version: 2
 
 project_name: petri-operator
+dist: dist/release
 
 before:
   hooks:
