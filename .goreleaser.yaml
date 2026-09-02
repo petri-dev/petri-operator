@@ -4,9 +4,8 @@ project_name: petri-operator
 
 before:
   hooks:
-    - go mod tidy
-    - make manifests generate
-    - bash -c 'kustomize build config/crd > crds.yaml'
+    - make build-installer IMG=ghcr.io/petri-dev/petri-operator:{{ .Tag }} DEPLOYER_IMG=ghcr.io/petri-dev/petri-deployer:{{ .Tag }}
+    - bash -c './bin/kustomize build config/crd > crds.yaml'
 
 builds:
   - id: operator
@@ -93,6 +92,7 @@ docker_manifests:
       - ghcr.io/petri-dev/petri-operator:{{.Tag}}-arm64
 
   - name_template: ghcr.io/petri-dev/petri-operator:latest
+    skip_push: auto
     image_templates:
       - ghcr.io/petri-dev/petri-operator:{{.Tag}}-amd64
       - ghcr.io/petri-dev/petri-operator:{{.Tag}}-arm64
@@ -103,6 +103,7 @@ docker_manifests:
       - ghcr.io/petri-dev/petri-deployer:{{.Tag}}-arm64
 
   - name_template: ghcr.io/petri-dev/petri-deployer:latest
+    skip_push: auto
     image_templates:
       - ghcr.io/petri-dev/petri-deployer:{{.Tag}}-amd64
       - ghcr.io/petri-dev/petri-deployer:{{.Tag}}-arm64
@@ -123,7 +124,11 @@ changelog:
       - Merge branch
 
 release:
-  draft: true
+  draft: false
+  prerelease: auto
   name_template: "v{{.Version}}"
+  preflight:
+    fail_on_error: true
   extra_files:
     - glob: crds.yaml
+    - glob: dist/install.yaml

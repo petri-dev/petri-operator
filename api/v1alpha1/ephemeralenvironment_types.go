@@ -35,11 +35,15 @@ const (
 // EphemeralEnvironmentSpec defines the desired state of EphemeralEnvironment.
 type EphemeralEnvironmentSpec struct {
 	Template string `json:"template"`
+
 	// +optional
-	Source SourceSpec          `json:"source,omitempty"`
+	Source SourceSpec `json:"source,omitempty"`
+
 	Values map[string]string   `json:"values,omitempty"`
 	Env    map[string]EnvValue `json:"env,omitempty"`
-	TTL    string              `json:"ttl,omitempty"`
+
+	// +optional
+	TTL string `json:"ttl,omitempty"`
 }
 
 type SourceSpec struct {
@@ -91,6 +95,7 @@ type EphemeralEnvironmentStatus struct {
 // +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=`.status.phase`
 // +kubebuilder:printcolumn:name="URL",type=string,JSONPath=`.status.url`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
+
 // EphemeralEnvironment is the Schema for the ephemeralenvironments API.
 type EphemeralEnvironment struct {
 	metav1.TypeMeta `json:",inline"`

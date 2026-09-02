@@ -106,6 +106,9 @@ type EnvironmentTemplateSpec struct {
 
 	// +kubebuilder:validation:MinItems=1
 	Components []ComponentSpec `json:"components"`
+
+	// +optional
+	TTL string `json:"ttl,omitempty"`
 }
 
 // EnvironmentTemplateStatus defines the observed state of EnvironmentTemplate.

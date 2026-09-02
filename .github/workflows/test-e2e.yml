@@ -11,7 +11,7 @@ jobs:
   test-e2e:
     permissions:
       contents: read
-    name: Run on Ubuntu
+    name: E2E tests
     runs-on: ubuntu-latest
     steps:
       - name: Clone the code
@@ -24,11 +24,14 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - name: Install the latest version of kind
+      - name: Install Kind
         run: |
-          curl -Lo ./kind https://kind.sigs.k8s.io/dl/latest/kind-linux-$(go env GOARCH)
-          chmod +x ./kind
-          sudo mv ./kind /usr/local/bin/kind
+          asset="kind-linux-$(go env GOARCH)"
+          url="https://github.com/kubernetes-sigs/kind/releases/download/v0.33.0"
+          curl -fsSLO "$url/$asset"
+          curl -fsSLO "$url/$asset.sha256sum"
+          sha256sum --check "$asset.sha256sum"
+          sudo install "$asset" /usr/local/bin/kind
 
       - name: Verify kind installation
         run: kind version
@@ -37,3 +40,4 @@ jobs:
         run: |
           go mod tidy
           make test-e2e
+          git diff --exit-code

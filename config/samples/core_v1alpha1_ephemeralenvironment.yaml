@@ -1,13 +1,3 @@
-# apiVersion: core.petri.run/v1alpha1
-# kind: EphemeralEnvironment
-# metadata:
-#   labels:
-#     app.kubernetes.io/name: petri
-#     app.kubernetes.io/managed-by: kustomize
-#   name: ephemeralenvironment-sample
-# spec:
-#   # TODO(user): Add fields here
-
 apiVersion: core.petri.run/v1alpha1
 kind: EphemeralEnvironment
 metadata:
@@ -15,15 +5,4 @@ metadata:
   namespace: default
 spec:
   template: environmenttemplate-sample
-  source:
-    repo: https://github.com/example/app
-    branch: feature-123
-    sha: abc1234
-  values:
-    image.tag: pr-123-abc1234
-  env:
-    FEATURE_X: "true"
-    DB_PASSWORD:
-      secretKeyRef:
-        component: postgres
-        key: PGPASSWORD
+  ttl: "4h"

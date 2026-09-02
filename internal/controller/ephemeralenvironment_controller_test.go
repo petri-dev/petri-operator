@@ -21,10 +21,12 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"time"
 
 	corev1alpha1 "github.com/petri-dev/petri-operator/api/v1alpha1"
 	"github.com/petri-dev/petri-operator/internal/deployer"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes/scheme"
@@ -91,11 +93,35 @@ func makeTemplate(ns, name string, components []corev1alpha1.ComponentSpec) {
 	Expect(k8sClient.Create(tctx, tmpl)).To(Succeed())
 }
 
+func makeTemplateWithTTL(ns, name, ttl string, components []corev1alpha1.ComponentSpec) {
+	tmpl := &corev1alpha1.EnvironmentTemplate{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns},
+		Spec: corev1alpha1.EnvironmentTemplateSpec{
+			TTL:        ttl,
+			Components: components,
+		},
+	}
+	Expect(k8sClient.Create(tctx, tmpl)).To(Succeed())
+}
+
 func makeEnv(ns, name, templateName string) types.NamespacedName {
 	env := &corev1alpha1.EphemeralEnvironment{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns},
 		Spec: corev1alpha1.EphemeralEnvironmentSpec{
 			Template: templateName,
+			Source:   corev1alpha1.SourceSpec{Repo: "https://github.com/example/repo", Branch: "main"},
+		},
+	}
+	Expect(k8sClient.Create(tctx, env)).To(Succeed())
+	return types.NamespacedName{Name: name, Namespace: ns}
+}
+
+func makeEnvWithTTL(ns, name, templateName, ttl string) types.NamespacedName {
+	env := &corev1alpha1.EphemeralEnvironment{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns},
+		Spec: corev1alpha1.EphemeralEnvironmentSpec{
+			Template: templateName,
+			TTL:      ttl,
 			Source:   corev1alpha1.SourceSpec{Repo: "https://github.com/example/repo", Branch: "main"},
 		},
 	}
@@ -173,6 +199,143 @@ var _ = Describe("EphemeralEnvironment Controller", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(ns.DeletionTimestamp).NotTo(BeNil())
 		})
+	})
+
+	Context("automatic lifecycle cleanup", func() {
+		DescribeTable("resolves the effective TTL",
+			func(templateTTL, envTTL string, wantTTL time.Duration, wantReason string) {
+				fd := newFakeDeployer()
+				fc := newFakeChecker()
+				r := newReconciler(fd, fc)
+
+				makeTemplateWithTTL(testNS, "policy-tmpl", templateTTL, []corev1alpha1.ComponentSpec{
+					{Name: "svc", Helm: helmSpec()},
+				})
+				key := makeEnvWithTTL(testNS, "policy-"+testNS, "policy-tmpl", envTTL)
+
+				_, err := r.Reconcile(tctx, reconcile.Request{NamespacedName: key})
+				Expect(err).NotTo(HaveOccurred())
+				_, err = r.Reconcile(tctx, reconcile.Request{NamespacedName: key})
+				Expect(err).NotTo(HaveOccurred())
+
+				env := getEnv(key)
+				if wantReason != "" {
+					Expect(env.Status.Phase).To(Equal(corev1alpha1.PhaseFailed))
+					Expect(failureReason(env)).To(Equal(wantReason))
+					Expect(fd.submitOrder()).To(BeEmpty())
+					ns := new(corev1.Namespace)
+					err := k8sClient.Get(tctx, types.NamespacedName{Name: nsPrefix + key.Name}, ns)
+					Expect(apierrors.IsNotFound(err)).To(BeTrue())
+					return
+				}
+
+				Expect(env.DeletionTimestamp.IsZero()).To(BeTrue())
+				if wantTTL == 0 {
+					Expect(env.Status.ExpiresAt).To(BeNil())
+					return
+				}
+				Expect(env.Status.ExpiresAt).NotTo(BeNil())
+				Expect(env.Status.ExpiresAt.Time).To(Equal(env.CreationTimestamp.Add(wantTTL)))
+			},
+			Entry("no TTL", "", "", time.Duration(0), ""),
+			Entry("template TTL", "2h", "", 2*time.Hour, ""),
+			Entry("environment override", "2h", "30m", 30*time.Minute, ""),
+			Entry("environment disables template", "1ns", "0", time.Duration(0), ""),
+			Entry("invalid TTL", "", "not-a-duration", time.Duration(0), "InvalidTTL"),
+			Entry("negative TTL", "", "-1s", time.Duration(0), "InvalidTTL"),
+		)
+
+		It("clears expiresAt when the TTL becomes invalid", func() {
+			r := newReconciler(newFakeDeployer(), newFakeChecker())
+			makeTemplate(testNS, "invalidated-ttl-tmpl", []corev1alpha1.ComponentSpec{{Name: "svc", Helm: helmSpec()}})
+			key := makeEnvWithTTL(testNS, "invalidated-ttl", "invalidated-ttl-tmpl", "2h")
+
+			_, err := r.Reconcile(tctx, reconcile.Request{NamespacedName: key})
+			Expect(err).NotTo(HaveOccurred())
+			_, err = r.Reconcile(tctx, reconcile.Request{NamespacedName: key})
+			Expect(err).NotTo(HaveOccurred())
+
+			env := getEnv(key)
+			Expect(env.Status.ExpiresAt).NotTo(BeNil())
+			env.Spec.TTL = "not-a-duration"
+			Expect(k8sClient.Update(tctx, env)).To(Succeed())
+
+			_, err = r.Reconcile(tctx, reconcile.Request{NamespacedName: key})
+			Expect(err).NotTo(HaveOccurred())
+			env = getEnv(key)
+			Expect(env.Status.ExpiresAt).To(BeNil())
+			Expect(failureReason(env)).To(Equal("InvalidTTL"))
+		})
+
+		It("clears expiresAt when the template is deleted", func() {
+			r := newReconciler(newFakeDeployer(), newFakeChecker())
+			makeTemplateWithTTL(testNS, "deleted-ttl-tmpl", "2h", []corev1alpha1.ComponentSpec{{Name: "svc", Helm: helmSpec()}})
+			key := makeEnv(testNS, "deleted-ttl", "deleted-ttl-tmpl")
+
+			_, err := r.Reconcile(tctx, reconcile.Request{NamespacedName: key})
+			Expect(err).NotTo(HaveOccurred())
+			_, err = r.Reconcile(tctx, reconcile.Request{NamespacedName: key})
+			Expect(err).NotTo(HaveOccurred())
+
+			env := getEnv(key)
+			Expect(env.Status.ExpiresAt).NotTo(BeNil())
+			template := new(corev1alpha1.EnvironmentTemplate)
+			Expect(k8sClient.Get(tctx, types.NamespacedName{Name: "deleted-ttl-tmpl", Namespace: testNS}, template)).To(Succeed())
+			Expect(k8sClient.Delete(tctx, template)).To(Succeed())
+
+			_, err = r.Reconcile(tctx, reconcile.Request{NamespacedName: key})
+			Expect(err).NotTo(HaveOccurred())
+			env = getEnv(key)
+			Expect(env.Status.ExpiresAt).To(BeNil())
+			Expect(failureReason(env)).To(Equal("TemplateNotFound"))
+		})
+
+		It("deletes an expired environment before creating its workload namespace", func() {
+			fd := newFakeDeployer()
+			fc := newFakeChecker()
+			r := newReconciler(fd, fc)
+
+			makeTemplateWithTTL(testNS, "ttl-tmpl", "1ms", []corev1alpha1.ComponentSpec{
+				{Name: "svc", Helm: helmSpec()},
+			})
+			key := makeEnvWithTTL(testNS, "ttl-before-deploy", "ttl-tmpl", "")
+
+			_, err := r.Reconcile(tctx, reconcile.Request{NamespacedName: key})
+			Expect(err).NotTo(HaveOccurred())
+			time.Sleep(5 * time.Millisecond)
+
+			reconcileUntilGone(r, key, 10)
+
+			Expect(fd.submitOrder()).To(BeEmpty())
+			ns := &corev1.Namespace{}
+			err = k8sClient.Get(tctx, types.NamespacedName{Name: nsPrefix + "ttl-before-deploy"}, ns)
+			Expect(apierrors.IsNotFound(err)).To(BeTrue())
+		})
+
+		It("deletes an environment that expires while deploying", func() {
+			fd := newFakeDeployer()
+			fc := newFakeChecker()
+			r := newReconciler(fd, fc)
+
+			makeTemplateWithTTL(testNS, "deploying-ttl-tmpl", "1s", []corev1alpha1.ComponentSpec{
+				{Name: "svc", Helm: helmSpec()},
+			})
+			key := makeEnvWithTTL(testNS, "ttl-during-deploy", "deploying-ttl-tmpl", "")
+			release := "ttl-during-deploy-svc"
+			fd.setOutcome(release, deployer.PendingJobPhase, "")
+
+			_, err := r.Reconcile(tctx, reconcile.Request{NamespacedName: key})
+			Expect(err).NotTo(HaveOccurred())
+			_, err = r.Reconcile(tctx, reconcile.Request{NamespacedName: key})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(fd.SubmitCount(release)).To(Equal(1))
+
+			time.Sleep(1100 * time.Millisecond)
+			reconcileUntilGone(r, key, 20)
+
+			Expect(fd.SubmitCount(release)).To(Equal(1))
+		})
+
 	})
 
 	Context("linear dependency chain postgres -> api -> frontend", func() {
@@ -325,7 +488,7 @@ var _ = Describe("EphemeralEnvironment Controller", func() {
 			fc := newFakeChecker()
 			r := newReconciler(fd, fc)
 
-			makeTemplate(testNS, "tmpl", []corev1alpha1.ComponentSpec{
+			makeTemplateWithTTL(testNS, "tmpl", "2h", []corev1alpha1.ComponentSpec{
 				{Name: "svc", Helm: helmSpec()},
 			})
 			key := makeEnv(testNS, "env", "tmpl")
@@ -338,6 +501,9 @@ var _ = Describe("EphemeralEnvironment Controller", func() {
 
 			env := getEnv(key)
 			Expect(failureReason(env)).To(Equal("DeployFailed"))
+			result, err := r.Reconcile(tctx, reconcile.Request{NamespacedName: key})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.RequeueAfter).To(BeNumerically(">", 0))
 		})
 	})
 

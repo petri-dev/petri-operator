@@ -65,6 +65,29 @@ const (
 
 var ErrNamespaceNotManaged = errors.New("namespace not managed by Petri")
 
+func resolveDeadline(created time.Time, envTTL, templateTTL string) (*time.Time, error) {
+	value := envTTL
+	if value == "" {
+		value = templateTTL
+	}
+	if value == "" {
+		return nil, nil
+	}
+
+	ttl, err := time.ParseDuration(value)
+	if err != nil {
+		return nil, err
+	}
+	if ttl < 0 {
+		return nil, errors.New("duration must be non-negative")
+	}
+	if ttl == 0 {
+		return nil, nil
+	}
+
+	return new(created.Add(ttl)), nil
+}
+
 type checker interface {
 	IsReady(ctx context.Context, namespace string, releaseName string, readiness *v1alpha1.ReadinessSpec) (bool, string, error)
 }
@@ -116,9 +139,19 @@ func (r *EphemeralEnvironmentReconciler) Reconcile(ctx context.Context, req ctrl
 
 func (r *EphemeralEnvironmentReconciler) reconcile(ctx context.Context, env *v1alpha1.EphemeralEnvironment) (res ctrl.Result, err error) {
 	log := logf.FromContext(ctx)
+	var deadline *time.Time
 
 	patcher := helpers.NewStatusPatcher(r.Client, env)
 	defer func() {
+		if err == nil && env.Status.Phase != v1alpha1.PhaseTerminating && deadline != nil {
+			remaining := time.Until(*deadline)
+			if remaining <= 0 {
+				remaining = time.Nanosecond
+			}
+			if res.RequeueAfter == 0 || remaining < res.RequeueAfter {
+				res.RequeueAfter = remaining
+			}
+		}
 		err = errors.Join(err, patcher.Patch(ctx, env))
 	}()
 
@@ -135,9 +168,29 @@ func (r *EphemeralEnvironmentReconciler) reconcile(ctx context.Context, env *v1a
 	template, err := r.getEnvironmentTemplate(ctx, env)
 	if err != nil {
 		if apierrors.IsNotFound(err) {
+			env.Status.ExpiresAt = nil
 			return ctrl.Result{}, r.setFailed(env, "TemplateNotFound", "template "+env.Spec.Template+" not found")
 		}
 		return ctrl.Result{}, err
+	}
+	now := time.Now()
+
+	deadline, err = resolveDeadline(env.CreationTimestamp.Time, env.Spec.TTL, template.Spec.TTL)
+	if err != nil {
+		env.Status.ExpiresAt = nil
+		return ctrl.Result{}, r.setFailed(env, "InvalidTTL", err.Error())
+	}
+
+	if deadline == nil {
+		env.Status.ExpiresAt = nil
+	} else {
+		env.Status.ExpiresAt = new(metav1.NewTime(*deadline))
+	}
+
+	if deadline != nil && !now.Before(*deadline) {
+		env.Status.Phase = v1alpha1.PhaseTerminating
+		deadline = nil
+		return ctrl.Result{}, client.IgnoreNotFound(r.Delete(ctx, env))
 	}
 
 	targetNs, err := r.targetNamespace(env)

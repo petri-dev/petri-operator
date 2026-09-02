@@ -104,11 +104,14 @@ setup-test-e2e: ## Set up a Kind cluster and local registry for e2e tests if the
 
 .PHONY: test-e2e
 test-e2e: setup-test-e2e manifests generate fmt vet ## Run the e2e tests. Expected an isolated environment using Kind.
-	KIND=$(KIND) KIND_CLUSTER=$(KIND_CLUSTER) \
+	@KUBECONFIG_FILE="$$(mktemp)"; \
+	trap 'status=$$?; rm -f "$$KUBECONFIG_FILE"; $(MAKE) cleanup-test-e2e; exit $$status' EXIT; \
+	$(KIND) get kubeconfig --name $(KIND_CLUSTER) > "$$KUBECONFIG_FILE"; \
+	KUBECONFIG="$$KUBECONFIG_FILE" \
+		KIND=$(KIND) KIND_CLUSTER=$(KIND_CLUSTER) \
 		E2E_REGISTRY_PORT=$(E2E_REGISTRY_PORT) \
 		DEPLOYER_IMG=$(DEPLOYER_IMG) \
 		go test -tags=e2e ./test/e2e/ -v -ginkgo.v -timeout 30m
-	$(MAKE) cleanup-test-e2e
 
 .PHONY: cleanup-test-e2e
 cleanup-test-e2e: ## Tear down the Kind cluster and local registry used for e2e tests
@@ -145,12 +148,16 @@ docker-build: ## Build docker image with the manager.
 	$(CONTAINER_TOOL) build --build-arg BIN=operator -t ${IMG} .
 
 .PHONY: docker-build-deployer
-docker-build-deployer:
+docker-build-deployer: ## Build the deployer image.
 	$(CONTAINER_TOOL) build --build-arg BIN=deployer -t ${DEPLOYER_IMG} .
 
 .PHONY: docker-push
 docker-push: ## Push docker image with the manager.
 	$(CONTAINER_TOOL) push ${IMG}
+
+.PHONY: docker-push-deployer
+docker-push-deployer: ## Push the deployer image.
+	$(CONTAINER_TOOL) push ${DEPLOYER_IMG}
 
 # PLATFORMS defines the target platforms for the manager image be built to provide support to multiple
 # architectures. (i.e. make docker-buildx IMG=myregistry/mypoperator:0.0.1). To use this option you need to:
@@ -165,40 +172,59 @@ docker-buildx: ## Build and push docker image for the manager for cross-platform
 	sed -e '1 s/\(^FROM\)/FROM --platform=\$$\{BUILDPLATFORM\}/; t' -e ' 1,// s//FROM --platform=\$$\{BUILDPLATFORM\}/' Dockerfile > Dockerfile.cross
 	- $(CONTAINER_TOOL) buildx create --name petri-builder
 	$(CONTAINER_TOOL) buildx use petri-builder
-	- $(CONTAINER_TOOL) buildx build --push --platform=$(PLATFORMS) --tag ${IMG} -f Dockerfile.cross .
+	$(CONTAINER_TOOL) buildx build --push --platform=$(PLATFORMS) --tag ${IMG} -f Dockerfile.cross .
 	- $(CONTAINER_TOOL) buildx rm petri-builder
 	rm Dockerfile.cross
 
 .PHONY: build-installer
 build-installer: manifests generate kustomize ## Generate a consolidated YAML with CRDs and deployment.
 	mkdir -p dist
-	cd config/manager && "$(KUSTOMIZE)" edit set image controller=${IMG} && "$(KUSTOMIZE)" edit set configmap deployer-image --from-literal=image=${DEPLOYER_IMG}
-	"$(KUSTOMIZE)" build config/default > dist/install.yaml
+	@tmp="$$(mktemp -d config/.petri-deploy.XXXXXX)"; readonly tmp; \
+	cleanup() { \
+		status=$$?; cleanup_status=0; \
+		unlink "$$tmp/kustomization.yaml" || cleanup_status=$$?; \
+		rmdir "$$tmp" || cleanup_status=$$?; \
+		if [ "$$status" -eq 0 ]; then status=$$cleanup_status; fi; \
+		exit "$$status"; \
+	}; \
+	trap cleanup EXIT; \
+	cp config/deploy/kustomization.yaml "$$tmp/kustomization.yaml"; \
+	( cd "$$tmp" && "$(KUSTOMIZE)" edit set image "petri-operator=${IMG}" && "$(KUSTOMIZE)" edit set configmap deployer-image --from-literal="image=${DEPLOYER_IMG}" ); \
+	"$(KUSTOMIZE)" build "$$tmp" > dist/install.yaml
 
 ##@ Deployment
 
 ifndef ignore-not-found
   ignore-not-found = false
 endif
+KUBECTL_DELETE_FLAGS ?=
 
 .PHONY: install
 install: manifests kustomize ## Install CRDs into the K8s cluster specified in ~/.kube/config.
-	@out="$$( "$(KUSTOMIZE)" build config/crd 2>/dev/null || true )"; \
-	if [ -n "$$out" ]; then echo "$$out" | "$(KUBECTL)" apply -f -; else echo "No CRDs to install; skipping."; fi
+	"$(KUSTOMIZE)" build config/crd | "$(KUBECTL)" apply -f -
 
 .PHONY: uninstall
 uninstall: manifests kustomize ## Uninstall CRDs from the K8s cluster specified in ~/.kube/config. Call with ignore-not-found=true to ignore resource not found errors during deletion.
-	@out="$$( "$(KUSTOMIZE)" build config/crd 2>/dev/null || true )"; \
-	if [ -n "$$out" ]; then echo "$$out" | "$(KUBECTL)" delete --ignore-not-found=$(ignore-not-found) -f -; else echo "No CRDs to delete; skipping."; fi
+	"$(KUSTOMIZE)" build config/crd | "$(KUBECTL)" delete $(KUBECTL_DELETE_FLAGS) --ignore-not-found=$(ignore-not-found) -f -
 
 .PHONY: deploy
 deploy: manifests kustomize ## Deploy controller to the K8s cluster specified in ~/.kube/config.
-	cd config/manager && "$(KUSTOMIZE)" edit set image controller=${IMG} && "$(KUSTOMIZE)" edit set configmap deployer-image --from-literal=image=${DEPLOYER_IMG}
-	"$(KUSTOMIZE)" build config/default | "$(KUBECTL)" apply -f -
+	@tmp="$$(mktemp -d config/.petri-deploy.XXXXXX)"; readonly tmp; \
+	cleanup() { \
+		status=$$?; cleanup_status=0; \
+		unlink "$$tmp/kustomization.yaml" || cleanup_status=$$?; \
+		rmdir "$$tmp" || cleanup_status=$$?; \
+		if [ "$$status" -eq 0 ]; then status=$$cleanup_status; fi; \
+		exit "$$status"; \
+	}; \
+	trap cleanup EXIT; \
+	cp config/deploy/kustomization.yaml "$$tmp/kustomization.yaml"; \
+	( cd "$$tmp" && "$(KUSTOMIZE)" edit set image "petri-operator=${IMG}" && "$(KUSTOMIZE)" edit set configmap deployer-image --from-literal="image=${DEPLOYER_IMG}" ); \
+	"$(KUSTOMIZE)" build "$$tmp" | "$(KUBECTL)" apply -f -
 
 .PHONY: undeploy
 undeploy: kustomize ## Undeploy controller from the K8s cluster specified in ~/.kube/config. Call with ignore-not-found=true to ignore resource not found errors during deletion.
-	"$(KUSTOMIZE)" build config/default | "$(KUBECTL)" delete --ignore-not-found=$(ignore-not-found) -f -
+	"$(KUSTOMIZE)" build config/default | "$(KUBECTL)" delete $(KUBECTL_DELETE_FLAGS) --ignore-not-found=$(ignore-not-found) -f -
 
 ##@ Dependencies
 
@@ -229,7 +255,7 @@ ENVTEST_K8S_VERSION ?= $(shell v='$(call gomodver,k8s.io/api)'; \
   [ -n "$$v" ] || { echo "Set ENVTEST_K8S_VERSION manually (k8s.io/api replace has no tag)" >&2; exit 1; }; \
   printf '%s\n' "$$v" | sed -E 's/^v?[0-9]+\.([0-9]+).*/1.\1/')
 
-GOLANGCI_LINT_VERSION ?= v2.12.2
+GOLANGCI_LINT_VERSION ?= v2.13.2
 .PHONY: kustomize
 kustomize: $(KUSTOMIZE) ## Download kustomize locally if necessary.
 $(KUSTOMIZE): $(LOCALBIN)
@@ -259,8 +285,9 @@ $(GOLANGCI_LINT): $(LOCALBIN)
 	$(call go-install-tool,$(GOLANGCI_LINT),github.com/golangci/golangci-lint/v2/cmd/golangci-lint,$(GOLANGCI_LINT_VERSION))
 	@test -f .custom-gcl.yml && { \
 		echo "Building custom golangci-lint with plugins..." && \
-		GOTOOLCHAIN=go1.26.5 $(GOLANGCI_LINT) custom --destination $(LOCALBIN) --name golangci-lint-custom && \
-		mv -f $(LOCALBIN)/golangci-lint-custom $(GOLANGCI_LINT); \
+		$(GOLANGCI_LINT) custom --destination $(LOCALBIN) --name golangci-lint-custom && \
+		mv -f $(LOCALBIN)/golangci-lint-custom $(GOLANGCI_LINT)-$(GOLANGCI_LINT_VERSION) && \
+		ln -sf $$(basename $(GOLANGCI_LINT)-$(GOLANGCI_LINT_VERSION)) $(GOLANGCI_LINT); \
 	} || true
 
 # go-install-tool will 'go install' any package with custom target and name of binary, if it doesn't exist
@@ -268,7 +295,7 @@ $(GOLANGCI_LINT): $(LOCALBIN)
 # $2 - package url which can be installed
 # $3 - specific version of package
 define go-install-tool
-@[ -f "$(1)-$(3)" ] && [ "$$(readlink -- "$(1)" 2>/dev/null)" = "$(1)-$(3)" ] || { \
+@[ -f "$(1)-$(3)" ] && [ "$$(readlink -- "$(1)" 2>/dev/null)" = "$$(basename "$(1)-$(3)")" ] || { \
 set -e; \
 package=$(2)@$(3) ;\
 echo "Downloading $${package}" ;\
@@ -276,9 +303,9 @@ rm -f "$(1)" ;\
 GOBIN="$(LOCALBIN)" go install $${package} ;\
 mv "$(LOCALBIN)/$$(basename "$(1)")" "$(1)-$(3)" ;\
 } ;\
-ln -sf "$$(realpath "$(1)-$(3)")" "$(1)"
+	ln -sf "$$(basename "$(1)-$(3)")" "$(1)"
 endef
 
 define gomodver
-$(shell go list -m -f '{{if .Replace}}{{.Replace.Version}}{{else}}{{.Version}}{{end}}' $(1) 2>/dev/null)
+$(shell go list -m -f '{{if .Replace}}{{.Replace.Version}}{{else}}{{.Version}}{{end}}' $(1))
 endef
