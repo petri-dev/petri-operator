@@ -1,0 +1,28 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+- ../default
+
+images:
+- name: petri-operator
+  newName: petri-operator
+  newTag: dev
+
+configMapGenerator:
+- name: deployer-image
+  behavior: replace
+  literals:
+  - image=petri-deployer:dev
+
+replacements:
+- source:
+    kind: ConfigMap
+    name: deployer-image
+    fieldPath: data.image
+  targets:
+  - select:
+      kind: Deployment
+      name: controller-manager
+    fieldPaths:
+    - spec.template.spec.containers.[name=manager].env.[name=PETRI_DEPLOYER_IMAGE].value

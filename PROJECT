@@ -7,7 +7,7 @@ domain: petri.run
 layout:
 - go.kubebuilder.io/v4
 projectName: petri
-repo: github.com/nuromirg/petri
+repo: github.com/petri-dev/petri-operator
 resources:
 - api:
     crdVersion: v1
@@ -15,7 +15,7 @@ resources:
   domain: petri.run
   group: core
   kind: EnvironmentTemplate
-  path: github.com/nuromirg/petri/api/v1alpha1
+  path: github.com/petri-dev/petri-operator/api/v1alpha1
   version: v1alpha1
 - api:
     crdVersion: v1
@@ -24,7 +24,7 @@ resources:
   domain: petri.run
   group: core
   kind: EphemeralEnvironment
-  path: github.com/nuromirg/petri/api/v1alpha1
+  path: github.com/petri-dev/petri-operator/api/v1alpha1
   version: v1alpha1
 - api:
     crdVersion: v1
@@ -33,7 +33,7 @@ resources:
   domain: petri.run
   group: core
   kind: SharedComponent
-  path: github.com/nuromirg/petri/api/v1alpha1
+  path: github.com/petri-dev/petri-operator/api/v1alpha1
   version: v1alpha1
 - api:
     crdVersion: v1
@@ -41,6 +41,6 @@ resources:
   domain: petri.run
   group: core
   kind: SharedComponentProvider
-  path: github.com/nuromirg/petri/api/v1alpha1
+  path: github.com/petri-dev/petri-operator/api/v1alpha1
   version: v1alpha1
 version: "3"

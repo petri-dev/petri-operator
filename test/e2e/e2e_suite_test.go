@@ -34,8 +34,8 @@ import (
 
 var (
 	// managerImage is the manager image to be built and loaded for testing.
-	managerImage  = "ghcr.io/nuromirg/petri:v0.0.1"
-	deployerImage = "ghcr.io/nuromirg/petri-deployer:v0.0.1"
+	managerImage  = "petri-operator:e2e"
+	deployerImage = "petri-deployer:e2e"
 	// e2eChartRef is the OCI ref for the stub chart pushed to the local registry. Set during BeforeSuite after the registry is ready.
 	e2eChartRef = ""
 	// shouldCleanupCertManager tracks whether CertManager was installed by this suite.
@@ -105,11 +105,11 @@ var _ = BeforeSuite(func(ctx context.Context) {
 
 var _ = AfterSuite(func(ctx context.Context) {
 	By("undeploying the operator")
-	cmd := exec.Command("make", "undeploy")
+	cmd := exec.CommandContext(ctx, "make", "undeploy", "KUBECTL_DELETE_FLAGS=--wait=false")
 	_, _ = utils.Run(cmd)
 
 	By("uninstalling CRDs")
-	cmd = exec.Command("make", "uninstall")
+	cmd = exec.CommandContext(ctx, "make", "uninstall", "KUBECTL_DELETE_FLAGS=--wait=false")
 	_, _ = utils.Run(cmd)
 
 	teardownCertManager(ctx)

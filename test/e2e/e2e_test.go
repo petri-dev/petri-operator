@@ -354,6 +354,37 @@ var _ = Describe("EphemeralEnvironment", func() {
 		})
 	})
 
+	Context("TTL cleanup", func() {
+		It("expires the environment and removes its namespace automatically", func() {
+			applyFixture("ttl_cleanup.yaml")
+
+			By("waiting for status.expiresAt to be populated")
+			Eventually(func() string {
+				cmd := exec.Command("kubectl", "get", "ephemeralenvironment", envName,
+					"-n", envNS, "-o", "jsonpath={.status.expiresAt}")
+				out, err := utils.Run(cmd)
+				if err != nil {
+					return ""
+				}
+				return strings.TrimSpace(out)
+			}).ShouldNot(BeEmpty())
+
+			By("waiting for the EphemeralEnvironment finalizer to complete")
+			Eventually(func() bool {
+				cmd := exec.Command("kubectl", "get", "ephemeralenvironment", envName, "-n", envNS)
+				_, err := utils.Run(cmd)
+				return err != nil
+			}, 2*time.Minute, time.Second).Should(BeTrue())
+
+			By("waiting for the workload namespace to be removed")
+			Eventually(func() bool {
+				cmd := exec.Command("kubectl", "get", "namespace", "petri-"+envName)
+				_, err := utils.Run(cmd)
+				return err != nil
+			}, 2*time.Minute, time.Second).Should(BeTrue())
+		})
+	})
+
 	Context("diamond multi-service", func() {
 		It("all four components reach Ready", func() {
 			applyFixture("diamond.yaml")

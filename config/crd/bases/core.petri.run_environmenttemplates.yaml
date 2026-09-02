@@ -131,6 +131,8 @@ spec:
                 required:
                 - domain
                 type: object
+              ttl:
+                type: string
             required:
             - components
             type: object

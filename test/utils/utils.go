@@ -64,7 +64,7 @@ func Run(cmd *exec.Cmd) (string, error) {
 // UninstallCertManager uninstalls the cert manager.
 func UninstallCertManager(ctx context.Context) {
 	url := fmt.Sprintf(certmanagerURLTmpl, certmanagerVersion)
-	cmd := exec.CommandContext(ctx, "kubectl", "delete", "-f", url)
+	cmd := exec.CommandContext(ctx, "kubectl", "delete", "--wait=false", "-f", url)
 	if _, err := Run(cmd); err != nil {
 		warnError(err)
 	}

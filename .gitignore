@@ -9,6 +9,8 @@
 *.dylib
 bin/
 crds.yaml
+/dist/
+/petri
 
 # Test binary, built with `go test -c`
 *.test
