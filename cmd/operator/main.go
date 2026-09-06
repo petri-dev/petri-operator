@@ -24,6 +24,7 @@ import (
 	"time"
 
 	corev1alpha1 "github.com/petri-dev/petri-operator/api/v1alpha1"
+	"github.com/petri-dev/petri-operator/internal/config"
 	"github.com/petri-dev/petri-operator/internal/controller"
 	"github.com/petri-dev/petri-operator/internal/deployer"
 	"github.com/petri-dev/petri-operator/internal/provisioner"
@@ -54,20 +55,20 @@ func init() {
 }
 
 func main() {
+	var configPath string
 	var metricsAddr string
 	var metricsCertPath, metricsCertName, metricsCertKey string
 	var webhookCertPath, webhookCertName, webhookCertKey string
-	var enableLeaderElection bool
 	var probeAddr string
 	var secureMetrics bool
 	var enableHTTP2 bool
 	var tlsOpts []func(*tls.Config)
+	flag.StringVar(&configPath, "config", "",
+		"Path to the operator config YAML. Behavioral settings (rate limiting, deploy "+
+			"defaults, leader election, deployer image) come from this file; serving flags below stay flags.")
 	flag.StringVar(&metricsAddr, "metrics-bind-address", "0", "The address the metrics endpoint binds to. "+
 		"Use :8443 for HTTPS or :8080 for HTTP, or leave as 0 to disable the metrics service.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
-	flag.BoolVar(&enableLeaderElection, "leader-elect", false,
-		"Enable leader election for controller manager. "+
-			"Enabling this will ensure there is only one active controller manager.")
 	flag.BoolVar(&secureMetrics, "metrics-secure", true,
 		"If set, the metrics endpoint is served securely via HTTPS. Use --metrics-secure=false to use HTTP instead.")
 	flag.StringVar(&webhookCertPath, "webhook-cert-path", "", "The directory that contains the webhook certificate.")
@@ -86,6 +87,17 @@ func main() {
 	flag.Parse()
 
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
+
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		setupLog.Error(err, "Failed to load config")
+		os.Exit(1)
+	}
+	rl := controller.RateLimitOptions{
+		MaxConcurrentReconciles: cfg.Controllers.MaxConcurrentReconciles,
+		QPS:                     cfg.Controllers.QPS,
+		Burst:                   cfg.Controllers.Burst,
+	}
 
 	// if the enable-http2 flag is false (the default), http/2 should be disabled
 	// due to its vulnerabilities. More specifically, disabling http/2 will
@@ -119,7 +131,7 @@ func main() {
 
 	webhookServer := webhook.NewServer(webhookServerOptions)
 
-	// Metrics endpoint is enabled in 'config/default/kustomization.yaml'. The Metrics options configure the server.
+	// Metrics endpoint is toggled via the chart's metrics.enabled value. The Metrics options configure the server.
 	// More info:
 	// - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.24.1/pkg/metrics/server
 	// - https://book.kubebuilder.io/reference/metrics.html
@@ -132,7 +144,7 @@ func main() {
 	if secureMetrics {
 		// FilterProvider is used to protect the metrics endpoint with authn/authz.
 		// These configurations ensure that only authorized users and service accounts
-		// can access the metrics endpoint. The RBAC are configured in 'config/rbac/kustomization.yaml'. More info:
+		// can access the metrics endpoint. The RBAC is defined in the chart's templates/rbac/metrics_auth.yaml. More info:
 		// https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.24.1/pkg/metrics/filters#WithAuthenticationAndAuthorization
 		metricsServerOptions.FilterProvider = filters.WithAuthenticationAndAuthorization
 	}
@@ -141,10 +153,8 @@ func main() {
 	// generate self-signed certificates for the metrics server. While convenient for development and testing,
 	// this setup is not recommended for production.
 	//
-	// TODO(user): If you enable certManager, uncomment the following lines:
-	// - [METRICS-WITH-CERTS] at config/default/kustomization.yaml to generate and use certificates
-	// managed by cert-manager for the metrics server.
-	// - [PROMETHEUS-WITH-CERTS] at config/prometheus/kustomization.yaml for TLS certification.
+	// TODO(user): to serve metrics over TLS with cert-manager, provide --metrics-cert-path and add the
+	// corresponding cert-manager resources to the chart (not shipped by default).
 	if len(metricsCertPath) > 0 {
 		setupLog.Info("Initializing metrics certificate watcher using provided certificates",
 			"metrics-cert-path", metricsCertPath, "metrics-cert-name", metricsCertName, "metrics-cert-key", metricsCertKey)
@@ -159,8 +169,8 @@ func main() {
 		Metrics:                metricsServerOptions,
 		WebhookServer:          webhookServer,
 		HealthProbeBindAddress: probeAddr,
-		LeaderElection:         enableLeaderElection,
-		LeaderElectionID:       "079603da.petri.run",
+		LeaderElection:         cfg.LeaderElection.Enabled,
+		LeaderElectionID:       cmp.Or(cfg.LeaderElection.ID, "079603da.petri.run"),
 		// LeaderElectionReleaseOnCancel defines if the leader should step down voluntarily
 		// when the Manager ends. This requires the binary to immediately end when the
 		// Manager is stopped, otherwise, this setting is unsafe. Setting this significantly
@@ -178,28 +188,48 @@ func main() {
 		os.Exit(1)
 	}
 
-	// TODO hardcoded, wire to a CRD timeout field in the future
+	// Job ActiveDeadlineSeconds for deploy/provision Jobs. Default 15m.
 	deadline := 15 * time.Minute
+	if cfg.Controllers.JobDeadline != "" {
+		d, err := time.ParseDuration(cfg.Controllers.JobDeadline)
+		if err != nil {
+			setupLog.Error(err, "Invalid controllers.jobDeadline")
+			os.Exit(1)
+		}
+		deadline = d
+	}
+
+	var defaultDeployTimeout time.Duration
+	if cfg.Controllers.DefaultDeployTimeout != "" {
+		d, err := time.ParseDuration(cfg.Controllers.DefaultDeployTimeout)
+		if err != nil {
+			setupLog.Error(err, "Invalid controllers.defaultDeployTimeout")
+			os.Exit(1)
+		}
+		defaultDeployTimeout = d
+	}
 
 	jobDeployer := &deployer.JobDeployer{
 		Client:         mgr.GetClient(),
 		Reader:         mgr.GetAPIReader(),
-		Image:          os.Getenv("PETRI_DEPLOYER_IMAGE"),
-		ServiceAccount: cmp.Or(os.Getenv("PETRI_DEPLOYER_SA"), "petri-deployer"),
+		Image:          cmp.Or(cfg.Deployer.Image, os.Getenv("PETRI_DEPLOYER_IMAGE")),
+		ServiceAccount: cmp.Or(cfg.Deployer.ServiceAccount, os.Getenv("PETRI_DEPLOYER_SA")),
 		Deadline:       deadline,
 	}
 
 	if err := (&controller.EphemeralEnvironmentReconciler{
 		Client:   mgr.GetClient(),
 		Scheme:   mgr.GetScheme(),
+		Recorder: mgr.GetEventRecorder("petri-controller"),
 		Deployer: jobDeployer,
 		Provisioner: &provisioner.JobProvisioner{
 			Client:   mgr.GetClient(),
 			Reader:   mgr.GetAPIReader(),
 			Deadline: deadline,
 		},
-		Checker: readiness.NewChecker(mgr.GetClient()),
-	}).SetupWithManager(mgr); err != nil {
+		Checker:              readiness.NewChecker(mgr.GetClient()),
+		DefaultDeployTimeout: defaultDeployTimeout,
+	}).SetupWithManager(mgr, rl); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "ephemeralenvironment")
 		os.Exit(1)
 	}
@@ -207,7 +237,7 @@ func main() {
 		Client:   mgr.GetClient(),
 		Scheme:   mgr.GetScheme(),
 		Deployer: jobDeployer,
-	}).SetupWithManager(mgr); err != nil {
+	}).SetupWithManager(mgr, rl); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "sharedcomponent")
 		os.Exit(1)
 	}

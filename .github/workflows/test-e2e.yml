@@ -24,6 +24,11 @@ jobs:
         with:
           go-version-file: go.mod
 
+      - name: Set up Helm
+        uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4.3.1
+        with:
+          version: v3.16.4
+
       - name: Install Kind
         run: |
           asset="kind-linux-$(go env GOARCH)"
@@ -35,6 +40,9 @@ jobs:
 
       - name: Verify kind installation
         run: kind version
+
+      - name: Verify Helm manifests
+        run: make helm-lint
 
       - name: Running Test e2e
         run: |

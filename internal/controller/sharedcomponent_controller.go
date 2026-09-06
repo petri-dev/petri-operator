@@ -350,9 +350,10 @@ func (r *SharedComponentReconciler) ensureDeployerRoleBinding(ctx context.Contex
 }
 
 // SetupWithManager sets up the controller with the Manager.
-func (r *SharedComponentReconciler) SetupWithManager(mgr ctrl.Manager) error {
+func (r *SharedComponentReconciler) SetupWithManager(mgr ctrl.Manager, rl RateLimitOptions) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&v1alpha1.SharedComponent{}).
 		Named("sharedcomponent").
+		WithOptions(rl.controllerOptions()).
 		Complete(r)
 }

@@ -6,7 +6,7 @@ dist: dist/release
 before:
   hooks:
     - make build-installer IMG=ghcr.io/petri-dev/petri-operator:{{ .Tag }} DEPLOYER_IMG=ghcr.io/petri-dev/petri-deployer:{{ .Tag }}
-    - bash -c './bin/kustomize build config/crd > crds.yaml'
+    - bash -c 'helm template petri charts/petri --show-only templates/crds.yaml > crds.yaml'
 
 builds:
   - id: operator

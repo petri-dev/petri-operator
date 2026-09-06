@@ -1,0 +1,51 @@
+# Default values for the petri operator chart.
+
+# CRDs are rendered as templates (so `helm upgrade` applies schema changes) and annotated helm.sh/resource-policy: keep (so uninstall never removes them).
+# Disable to manage CRDs out of band (GitOps or cluster admin).
+crds:
+  enabled: true
+
+operator:
+  image:
+    repository: ghcr.io/petri-dev/petri-operator
+    # tag defaults to .Chart.AppVersion when empty
+    tag: ""
+    pullPolicy: IfNotPresent
+  replicas: 1
+  resources:
+    limits:
+      cpu: 500m
+      memory: 256Mi
+    requests:
+      cpu: 10m
+      memory: 256Mi
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+deployer:
+  image:
+    repository: ghcr.io/petri-dev/petri-deployer
+    # tag defaults to .Chart.AppVersion when empty; wired into PETRI_DEPLOYER_IMAGE
+    tag: ""
+
+# operatorConfig is rendered verbatim into a ConfigMap and mounted at
+# /etc/petri/config.yaml (passed via --config). See internal/config for the schema.
+operatorConfig:
+  leaderElection:
+    enabled: true
+  controllers:
+    maxConcurrentReconciles: 4
+    qps: 10
+    burst: 100
+    defaultDeployTimeout: 15m
+    jobDeadline: 15m
+
+# metrics serving is off by default: secure metrics require TLS certs.
+metrics:
+  enabled: false
+
+serviceAccount:
+  name: petri-controller-manager
+
+imagePullSecrets: []

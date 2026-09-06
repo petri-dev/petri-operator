@@ -9,13 +9,21 @@ Petri also supports shared components backed by pluggable providers, allowing en
 
 ## Install
 
-Petri is tested on Kubernetes 1.36. Try out the latest release:
+Petri is tested on Kubernetes 1.36. Install with Helm:
+
+```sh
+helm install petri oci://ghcr.io/petri-dev/charts/petri --namespace petri-system --create-namespace
+```
+
+Or apply the consolidated manifest from the latest release:
 
 ```sh
 kubectl apply -f https://github.com/petri-dev/petri-operator/releases/latest/download/install.yaml
 ```
 
-The installer uses matching versioned images from `ghcr.io/petri-dev/petri-operator` and `ghcr.io/petri-dev/petri-deployer`. Select a specific release URL instead of `latest` to pin installation manifests.
+Both use matching versioned images from `ghcr.io/petri-dev/petri-operator` and `ghcr.io/petri-dev/petri-deployer`. Select a specific release (Helm `--version`, or a pinned release URL) to pin the installation.
+
+CRDs are installed once and are not removed on `helm uninstall` or `kubectl delete`, which keeps your `EphemeralEnvironment`s from being torn down. When upgrading to a new release, apply that release's `crds.yaml` before `helm upgrade` to pick up schema changes.
 
 Apply the runnable sample:
 
@@ -28,7 +36,7 @@ Delete the sample before uninstalling Petri:
 
 ```sh
 kubectl delete -k config/samples
-kubectl delete -f https://github.com/petri-dev/petri-operator/releases/latest/download/install.yaml
+helm uninstall petri --namespace petri-system
 ```
 
 ## Development

@@ -17,6 +17,7 @@ limitations under the License.
 package controller
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -36,6 +37,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/validation"
+	"k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -52,8 +54,8 @@ const (
 	requeueImmediate = time.Second
 	maxDeployRetries = 5
 	maxDeployBackoff = 5 * time.Minute
-	// TODO make them configurable through EphemeralEnvironment.Spec.TTL.
-	deployTimeout = 15 * time.Minute
+	// defaultDeployTimeout bounds component readiness when the template does not set spec.deployTimeout.
+	defaultDeployTimeout = 15 * time.Minute
 	// deployConcurrency bounds how many deploy/undeploy Jobs are submitted or
 	// observed at once, per level.
 	deployConcurrency = 4
@@ -88,6 +90,20 @@ func resolveDeadline(created time.Time, envTTL, templateTTL string) (*time.Time,
 	return new(created.Add(ttl)), nil
 }
 
+func resolveDeployTimeout(templateTimeout string, fallback time.Duration) (time.Duration, error) {
+	if templateTimeout == "" {
+		return fallback, nil
+	}
+	d, err := time.ParseDuration(templateTimeout)
+	if err != nil {
+		return 0, err
+	}
+	if d <= 0 {
+		return 0, errors.New("deployTimeout must be positive")
+	}
+	return d, nil
+}
+
 type checker interface {
 	IsReady(ctx context.Context, namespace string, releaseName string, readiness *v1alpha1.ReadinessSpec) (bool, string, error)
 }
@@ -96,9 +112,13 @@ type checker interface {
 type EphemeralEnvironmentReconciler struct {
 	client.Client
 	Scheme      *runtime.Scheme
+	Recorder    events.EventRecorder
 	Deployer    deployer.Deployer
 	Provisioner provisioner.Provisioner
 	Checker     checker
+
+	// DefaultDeployTimeout is the readiness timeout used when a template doesnt set spec.deployTimeout. Zero falls back to defaultDeployTimeout.
+	DefaultDeployTimeout time.Duration
 }
 
 // +kubebuilder:rbac:groups=core.petri.run,resources=ephemeralenvironments,verbs=get;list;watch;create;update;patch;delete
@@ -109,6 +129,7 @@ type EphemeralEnvironmentReconciler struct {
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;list;watch;create;delete;patch
 // +kubebuilder:rbac:groups="",resources=serviceaccounts,verbs=get;list;watch;create;delete
+// +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 // +kubebuilder:rbac:groups=apps,resources=deployments;statefulsets,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=services,verbs=get;list;watch
 // +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=rolebindings,verbs=get;list;watch;create;delete
@@ -141,6 +162,8 @@ func (r *EphemeralEnvironmentReconciler) reconcile(ctx context.Context, env *v1a
 	log := logf.FromContext(ctx)
 	var deadline *time.Time
 
+	oldPhase := env.Status.Phase
+
 	patcher := helpers.NewStatusPatcher(r.Client, env)
 	defer func() {
 		if err == nil && env.Status.Phase != v1alpha1.PhaseTerminating && deadline != nil {
@@ -152,6 +175,7 @@ func (r *EphemeralEnvironmentReconciler) reconcile(ctx context.Context, env *v1a
 				res.RequeueAfter = remaining
 			}
 		}
+		recordPhaseTransition(r.Recorder, env, oldPhase)
 		err = errors.Join(err, patcher.Patch(ctx, env))
 	}()
 
@@ -159,6 +183,8 @@ func (r *EphemeralEnvironmentReconciler) reconcile(ctx context.Context, env *v1a
 		log.Info("spec changed, resetting environment state",
 			"observedGeneration", env.Status.ObservedGeneration, "generation", env.Generation)
 		env.Status.Phase = ""
+		env.Status.DeployStartedAt = nil
+		oldPhase = ""
 
 		// we rely on helm idempotency here, so each non-equal scenario will do an acceptable install-or-upgrade with helm
 		env.Status.Components = nil
@@ -193,6 +219,11 @@ func (r *EphemeralEnvironmentReconciler) reconcile(ctx context.Context, env *v1a
 		return ctrl.Result{}, client.IgnoreNotFound(r.Delete(ctx, env))
 	}
 
+	deployTimeout, err := resolveDeployTimeout(template.Spec.DeployTimeout, cmp.Or(r.DefaultDeployTimeout, defaultDeployTimeout))
+	if err != nil {
+		return ctrl.Result{}, r.setFailed(env, "InvalidConfiguration", "invalid deployTimeout: "+err.Error())
+	}
+
 	targetNs, err := r.targetNamespace(env)
 	if err != nil {
 		return ctrl.Result{}, r.setFailed(env, "InvalidConfiguration", err.Error())
@@ -222,7 +253,12 @@ func (r *EphemeralEnvironmentReconciler) reconcile(ctx context.Context, env *v1a
 		return ctrl.Result{}, nil
 	}
 
-	env.Status.Phase = v1alpha1.PhaseDeploying
+	if env.Status.Phase != v1alpha1.PhaseReady && env.Status.Phase != v1alpha1.PhaseDeploying {
+		env.Status.DeployStartedAt = new(metav1.Now())
+		env.Status.Phase = v1alpha1.PhaseDeploying
+		recordPhaseTransition(r.Recorder, env, oldPhase)
+		oldPhase = env.Status.Phase
+	}
 
 	phaseByName := make(map[string]v1alpha1.Phase, len(env.Status.Components))
 	for _, cs := range env.Status.Components {
@@ -235,7 +271,7 @@ func (r *EphemeralEnvironmentReconciler) reconcile(ctx context.Context, env *v1a
 			continue
 		}
 
-		return r.processLevel(ctx, env, targetNs, level, phaseByName)
+		return r.processLevel(ctx, env, targetNs, level, phaseByName, deployTimeout)
 	}
 
 	// TODO also update the status.URL field with domain
@@ -247,8 +283,11 @@ func (r *EphemeralEnvironmentReconciler) reconcile(ctx context.Context, env *v1a
 }
 
 func (r *EphemeralEnvironmentReconciler) reconcileDelete(ctx context.Context, env *v1alpha1.EphemeralEnvironment) (res ctrl.Result, err error) {
+	oldPhase := env.Status.Phase
+
 	patcher := helpers.NewStatusPatcher(r.Client, env)
 	defer func() {
+		recordPhaseTransition(r.Recorder, env, oldPhase)
 		err = errors.Join(err, patcher.Patch(ctx, env))
 	}()
 
@@ -532,10 +571,11 @@ func (r *EphemeralEnvironmentReconciler) removeFinalizer(ctx context.Context, en
 	return r.Patch(ctx, env, patch)
 }
 
-func (r *EphemeralEnvironmentReconciler) SetupWithManager(mgr ctrl.Manager) error {
+func (r *EphemeralEnvironmentReconciler) SetupWithManager(mgr ctrl.Manager, rl RateLimitOptions) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&v1alpha1.EphemeralEnvironment{}).
 		Named("ephemeralenvironment").
+		WithOptions(rl.controllerOptions()).
 		Complete(r)
 }
 

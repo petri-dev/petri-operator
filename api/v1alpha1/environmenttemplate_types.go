@@ -109,6 +109,10 @@ type EnvironmentTemplateSpec struct {
 
 	// +optional
 	TTL string `json:"ttl,omitempty"`
+
+	// DeployTimeout bounds how long a component may take to become Ready before it is retried/failed. Pass the duration string (e.g. "20m"). Defaults to 15m when empty.
+	// +optional
+	DeployTimeout string `json:"deployTimeout,omitempty"`
 }
 
 // EnvironmentTemplateStatus defines the observed state of EnvironmentTemplate.

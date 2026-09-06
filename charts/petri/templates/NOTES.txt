@@ -1,0 +1,24 @@
+Petri operator {{ .Chart.AppVersion }} installed in namespace {{ .Release.Namespace }}.
+
+Leader election: {{ .Values.operatorConfig.leaderElection.enabled }}
+Operator image:  {{ include "petri.operatorImage" . }}
+Deployer image:  {{ include "petri.deployerImage" . }}
+{{- if not .Values.metrics.enabled }}
+
+Metrics are disabled. Enable with --set metrics.enabled=true (requires TLS setup
+for the secure endpoint).
+{{- end }}
+
+Create an environment (an EnvironmentTemplate plus an EphemeralEnvironment
+that references it):
+
+  base=https://raw.githubusercontent.com/petri-dev/petri-operator/main/config/samples
+  kubectl apply -f $base/core_v1alpha1_environmenttemplate.yaml
+  kubectl apply -f $base/core_v1alpha1_ephemeralenvironment.yaml
+  kubectl get ephemeralenvironments -A
+
+CRDs are installed once from the chart's crds/ directory. Per Helm's design, they are NOT touched by `helm upgrade` and NOT removed by `helm uninstall` - this protects your EphemeralEnvironments from being torn down on uninstall.
+To update the CRD schemas when upgrading to a new release, apply that release's CRDs first:
+
+  kubectl apply -f https://github.com/petri-dev/petri-operator/releases/download/<version>/crds.yaml
+  helm upgrade petri oci://ghcr.io/petri-dev/charts/petri --version <version> -n {{ .Release.Namespace }}
