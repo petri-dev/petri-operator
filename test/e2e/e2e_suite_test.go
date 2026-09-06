@@ -80,6 +80,7 @@ var _ = BeforeSuite(func(ctx context.Context) {
 	cmd = exec.Command("make", "deploy",
 		fmt.Sprintf("IMG=%s", managerImage),
 		fmt.Sprintf("DEPLOYER_IMG=%s", deployerImage),
+		"HELM_EXTRA_ARGS=--set metrics.enabled=true",
 	)
 	_, err = utils.Run(cmd)
 	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to deploy the operator")
@@ -105,11 +106,11 @@ var _ = BeforeSuite(func(ctx context.Context) {
 
 var _ = AfterSuite(func(ctx context.Context) {
 	By("undeploying the operator")
-	cmd := exec.CommandContext(ctx, "make", "undeploy", "KUBECTL_DELETE_FLAGS=--wait=false")
+	cmd := exec.CommandContext(ctx, "make", "undeploy")
 	_, _ = utils.Run(cmd)
 
 	By("uninstalling CRDs")
-	cmd = exec.CommandContext(ctx, "make", "uninstall", "KUBECTL_DELETE_FLAGS=--wait=false")
+	cmd = exec.CommandContext(ctx, "make", "uninstall", "ignore-not-found=true")
 	_, _ = utils.Run(cmd)
 
 	teardownCertManager(ctx)

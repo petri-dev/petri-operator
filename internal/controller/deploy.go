@@ -30,7 +30,7 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 )
 
-func (r *EphemeralEnvironmentReconciler) processLevel(ctx context.Context, env *v1alpha1.EphemeralEnvironment, targetNs string, level []v1alpha1.ComponentSpec, phaseByName map[string]v1alpha1.Phase) (ctrl.Result, error) {
+func (r *EphemeralEnvironmentReconciler) processLevel(ctx context.Context, env *v1alpha1.EphemeralEnvironment, targetNs string, level []v1alpha1.ComponentSpec, phaseByName map[string]v1alpha1.Phase, deployTimeout time.Duration) (ctrl.Result, error) {
 	needDeploy, submitting, needCheck := partitionLevel(level, phaseByName)
 
 	logf.FromContext(ctx).V(1).Info("processing frontier",
@@ -46,7 +46,7 @@ func (r *EphemeralEnvironmentReconciler) processLevel(ctx context.Context, env *
 		}
 	}
 
-	return r.checkReadiness(ctx, env, targetNs, needCheck)
+	return r.checkReadiness(ctx, env, targetNs, needCheck, deployTimeout)
 }
 
 func partitionLevel(level []v1alpha1.ComponentSpec, phaseByName map[string]v1alpha1.Phase) (needDeploy, submitting, needCheck []v1alpha1.ComponentSpec) {
@@ -197,7 +197,7 @@ func (r *EphemeralEnvironmentReconciler) observeDeploys(ctx context.Context, env
 	return ctrl.Result{}, false, nil
 }
 
-func (r *EphemeralEnvironmentReconciler) checkReadiness(ctx context.Context, env *v1alpha1.EphemeralEnvironment, targetNs string, needCheck []v1alpha1.ComponentSpec) (ctrl.Result, error) {
+func (r *EphemeralEnvironmentReconciler) checkReadiness(ctx context.Context, env *v1alpha1.EphemeralEnvironment, targetNs string, needCheck []v1alpha1.ComponentSpec, deployTimeout time.Duration) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 
 	allDone := true

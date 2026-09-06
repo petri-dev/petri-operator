@@ -1,0 +1,8 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ .Release.Name }}-manager-role
+  labels:
+    {{- include "petri.labels" . | nindent 4 }}
+rules:
+  {{- (.Files.Get "_rbac/role.yaml" | fromYaml).rules | toYaml | nindent 2 }}

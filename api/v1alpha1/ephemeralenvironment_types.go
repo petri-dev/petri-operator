@@ -77,6 +77,10 @@ type EphemeralEnvironmentStatus struct {
 	// +kubebuilder:validation:Enum=Pending;Deploying;Ready;Failed;Terminating
 	Phase Phase `json:"phase,omitempty"`
 
+	// DeployStartedAt is the start of the current deployment attempt, reset on spec changes.
+	// +optional
+	DeployStartedAt *metav1.Time `json:"deployStartedAt,omitempty"`
+
 	URL       string       `json:"url,omitempty"`
 	ExpiresAt *metav1.Time `json:"expiresAt,omitempty"`
 
