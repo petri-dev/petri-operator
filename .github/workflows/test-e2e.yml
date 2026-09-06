@@ -41,6 +41,9 @@ jobs:
       - name: Verify kind installation
         run: kind version
 
+      - name: Verify Helm manifests
+        run: make helm-lint
+
       - name: Running Test e2e
         run: |
           go mod tidy

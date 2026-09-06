@@ -9,6 +9,7 @@ import (
 )
 
 func TestLoad_EmptyPathUsesDefaults(t *testing.T) {
+	t.Parallel()
 	c, err := Load("")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -31,6 +32,7 @@ func TestLoad_EmptyPathUsesDefaults(t *testing.T) {
 }
 
 func TestLoad_PartialOverridesOnlyNamedFields(t *testing.T) {
+	t.Parallel()
 	path := writeTemp(t, `
 leaderElection:
   enabled: true
@@ -62,6 +64,7 @@ controllers:
 }
 
 func TestLoad_UnknownFieldRejected(t *testing.T) {
+	t.Parallel()
 	path := writeTemp(t, "controllers:\n  bogusField: 1\n")
 	if _, err := Load(path); err == nil {
 		t.Fatal("expected error for unknown field, got nil")
@@ -69,12 +72,14 @@ func TestLoad_UnknownFieldRejected(t *testing.T) {
 }
 
 func TestLoad_MissingFileErrors(t *testing.T) {
+	t.Parallel()
 	if _, err := Load("/nonexistent/petri-config.yaml"); err == nil {
 		t.Fatal("expected error for missing file, got nil")
 	}
 }
 
 func TestLoad_ControllerDurations(t *testing.T) {
+	t.Parallel()
 	for _, field := range []string{"defaultDeployTimeout", "jobDeadline"} {
 		for _, tc := range []struct {
 			value   string
@@ -89,6 +94,7 @@ func TestLoad_ControllerDurations(t *testing.T) {
 			{"bad", true},
 		} {
 			t.Run(field+"/"+tc.value, func(t *testing.T) {
+				t.Parallel()
 				path := writeTemp(t, fmt.Sprintf("controllers:\n  %s: %q\n", field, tc.value))
 				c, err := Load(path)
 				if tc.wantErr {

@@ -6,6 +6,7 @@ import (
 )
 
 func TestResolveDeployTimeout(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name    string
 		in      string
@@ -20,6 +21,7 @@ func TestResolveDeployTimeout(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			got, err := resolveDeployTimeout(tc.in, defaultDeployTimeout)
 			if tc.wantErr {
 				if err == nil {

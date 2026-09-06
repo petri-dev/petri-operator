@@ -22,6 +22,7 @@ func envInPhase(phase v1alpha1.Phase) *v1alpha1.EphemeralEnvironment {
 	}
 }
 
+//nolint:paralleltest // phase transition tests share global Prometheus counters and histograms.
 func TestRecordPhaseTransition_EmitsEventOnChange(t *testing.T) {
 	rec := events.NewFakeRecorder(4)
 	recordPhaseTransition(rec, envInPhase(v1alpha1.PhaseReady), v1alpha1.PhaseDeploying)
@@ -36,6 +37,7 @@ func TestRecordPhaseTransition_EmitsEventOnChange(t *testing.T) {
 	}
 }
 
+//nolint:paralleltest // Phase transition tests share global Prometheus counters and histograms.
 func TestRecordPhaseTransition_WarningOnFailed(t *testing.T) {
 	rec := events.NewFakeRecorder(4)
 	recordPhaseTransition(rec, envInPhase(v1alpha1.PhaseFailed), v1alpha1.PhaseDeploying)
@@ -46,6 +48,7 @@ func TestRecordPhaseTransition_WarningOnFailed(t *testing.T) {
 	}
 }
 
+//nolint:paralleltest // Phase transition tests share global Prometheus counters and histograms.
 func TestRecordPhaseTransition_NoEventWhenUnchanged(t *testing.T) {
 	rec := events.NewFakeRecorder(4)
 	recordPhaseTransition(rec, envInPhase(v1alpha1.PhaseReady), v1alpha1.PhaseReady)
@@ -57,10 +60,12 @@ func TestRecordPhaseTransition_NoEventWhenUnchanged(t *testing.T) {
 	}
 }
 
+//nolint:paralleltest // Phase transition tests share global Prometheus counters and histograms.
 func TestRecordPhaseTransition_NilRecorderSafe(t *testing.T) {
 	recordPhaseTransition(nil, envInPhase(v1alpha1.PhaseReady), v1alpha1.PhaseDeploying)
 }
 
+//nolint:paralleltest // Phase transition tests share global Prometheus counters and histograms.
 func TestRecordPhaseTransition_SkipsEmptyPhase(t *testing.T) {
 	rec := events.NewFakeRecorder(4)
 	recordPhaseTransition(rec, envInPhase(""), v1alpha1.PhaseReady)
@@ -72,6 +77,7 @@ func TestRecordPhaseTransition_SkipsEmptyPhase(t *testing.T) {
 	}
 }
 
+//nolint:paralleltest // Phase transition tests share global Prometheus counters and histograms.
 func TestRecordPhaseTransition_CountsAndFailures(t *testing.T) {
 	beforeReady := testutil.ToFloat64(phaseTransitions.WithLabelValues(string(v1alpha1.PhaseReady)))
 	beforeFail := testutil.ToFloat64(deployFailures)
@@ -87,6 +93,7 @@ func TestRecordPhaseTransition_CountsAndFailures(t *testing.T) {
 	}
 }
 
+//nolint:paralleltest // Phase transition tests share global Prometheus counters and histograms.
 func TestDeployDurationUsesDeploymentStart(t *testing.T) {
 	before := &dto.Metric{}
 	if err := deployDuration.Write(before); err != nil {
@@ -111,6 +118,7 @@ func TestDeployDurationUsesDeploymentStart(t *testing.T) {
 	}
 }
 
+//nolint:paralleltest // Test and subtests assert deltas on shared global Prometheus counters.
 func TestReconcileRecordsRedeployment(t *testing.T) {
 	s := runtime.NewScheme()
 	if err := scheme.AddToScheme(s); err != nil {
