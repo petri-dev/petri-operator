@@ -78,6 +78,23 @@ func TestLoad_MissingFileErrors(t *testing.T) {
 	}
 }
 
+func TestLoad_NegativeRateLimitsRejected(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct{ name, yaml, wantSubstr string }{
+		{"burst", "controllers:\n  burst: -1\n", "controllers.burst"},
+		{"qps", "controllers:\n  qps: -0.5\n", "controllers.qps"},
+		{"maxConcurrentReconciles", "controllers:\n  maxConcurrentReconciles: -2\n", "controllers.maxConcurrentReconciles"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			_, err := Load(writeTemp(t, tc.yaml))
+			if err == nil || !strings.Contains(err.Error(), tc.wantSubstr) {
+				t.Fatalf("expected error naming %s, got %v", tc.wantSubstr, err)
+			}
+		})
+	}
+}
+
 func TestLoad_ControllerDurations(t *testing.T) {
 	t.Parallel()
 	for _, field := range []string{"defaultDeployTimeout", "jobDeadline"} {

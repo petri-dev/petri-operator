@@ -66,3 +66,12 @@ func recordPhaseTransition(rec events.EventRecorder, env *v1alpha1.EphemeralEnvi
 		}
 	}
 }
+
+func recordPhaseTransitions(rec events.EventRecorder, env *v1alpha1.EphemeralEnvironment, oldPhase v1alpha1.Phase, passed []v1alpha1.Phase) {
+	prev := oldPhase
+	for _, p := range passed {
+		env.Status.Phase = p
+		recordPhaseTransition(rec, env, prev)
+		prev = p
+	}
+}

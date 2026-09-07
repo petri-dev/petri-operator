@@ -26,6 +26,7 @@ import (
 	corev1alpha1 "github.com/petri-dev/petri-operator/api/v1alpha1"
 	"github.com/petri-dev/petri-operator/internal/deployer"
 	corev1 "k8s.io/api/core/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -234,6 +235,35 @@ var _ = Describe("EphemeralEnvironment Controller", func() {
 			fc.setReady("grow-1-svc2", true)
 			Expect(reconcileUntilTerminal(r, key, 20)).To(Equal(corev1alpha1.PhaseReady))
 			Expect(fd.SubmitCount("grow-1-svc2")).To(Equal(1))
+		})
+	})
+
+	Context("custom deployer service account", func() {
+		It("creates the SA and RoleBinding under the configured name", func() {
+			fd := newFakeDeployer()
+			fc := newFakeChecker()
+			r := newReconciler(fd, fc)
+			r.DeployerServiceAccount = "custom-deployer"
+
+			makeTemplate(testNS, "sa-tmpl", []corev1alpha1.ComponentSpec{
+				{Name: "svc", Helm: helmSpec()},
+			})
+			key := makeEnv(testNS, "sa-1", "sa-tmpl")
+			fd.setOutcome("sa-1-svc", deployer.SucceededJobPhase, "")
+			fc.setReady("sa-1-svc", true)
+
+			Expect(reconcileUntilTerminal(r, key, 20)).To(Equal(corev1alpha1.PhaseReady))
+
+			targetNs := nsPrefix + "sa-1"
+			// The SA the deploy Jobs run as must exist under the configured name,
+			// not the hardcoded default, or Pods can't schedule in the new ns.
+			sa := &corev1.ServiceAccount{}
+			Expect(k8sClient.Get(tctx, types.NamespacedName{Namespace: targetNs, Name: "custom-deployer"}, sa)).To(Succeed())
+			rb := &rbacv1.RoleBinding{}
+			Expect(k8sClient.Get(tctx, types.NamespacedName{Namespace: targetNs, Name: "custom-deployer"}, rb)).To(Succeed())
+			Expect(rb.Subjects).To(ContainElement(rbacv1.Subject{
+				Kind: rbacv1.ServiceAccountKind, Name: "custom-deployer", Namespace: targetNs,
+			}))
 		})
 	})
 

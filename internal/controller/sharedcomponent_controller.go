@@ -17,6 +17,7 @@ limitations under the License.
 package controller
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -49,6 +50,11 @@ type SharedComponentReconciler struct {
 	client.Client
 	Scheme   *runtime.Scheme
 	Deployer deployer.Deployer
+
+	// DeployerServiceAccount is the ServiceAccount name that deploy Jobs run as;
+	// the controller creates it and its RoleBinding per target namespace. Empty
+	// falls back to the "petri-deployer" default.
+	DeployerServiceAccount string
 }
 
 // +kubebuilder:rbac:groups=core.petri.run,resources=sharedcomponents,verbs=get;list;watch;create;update;patch;delete
@@ -318,15 +324,16 @@ func (r *SharedComponentReconciler) createSharedNamespace(ctx context.Context, t
 }
 
 func (r *SharedComponentReconciler) ensureDeployerRoleBinding(ctx context.Context, targetNs string) error {
+	name := cmp.Or(r.DeployerServiceAccount, deployerRoleBinding)
 	sa := &corev1.ServiceAccount{
-		ObjectMeta: metav1.ObjectMeta{Name: deployerRoleBinding, Namespace: targetNs},
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: targetNs},
 	}
 	if err := r.Create(ctx, sa); err != nil && !apierrors.IsAlreadyExists(err) {
 		return err
 	}
 
 	rb := &rbacv1.RoleBinding{}
-	err := r.Get(ctx, client.ObjectKey{Namespace: targetNs, Name: deployerRoleBinding}, rb)
+	err := r.Get(ctx, client.ObjectKey{Namespace: targetNs, Name: name}, rb)
 	if err == nil {
 		return nil
 	}
@@ -335,7 +342,7 @@ func (r *SharedComponentReconciler) ensureDeployerRoleBinding(ctx context.Contex
 	}
 
 	return r.Create(ctx, &rbacv1.RoleBinding{
-		ObjectMeta: metav1.ObjectMeta{Name: deployerRoleBinding, Namespace: targetNs},
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: targetNs},
 		RoleRef: rbacv1.RoleRef{
 			APIGroup: rbacv1.GroupName,
 			Kind:     "ClusterRole",
@@ -343,7 +350,7 @@ func (r *SharedComponentReconciler) ensureDeployerRoleBinding(ctx context.Contex
 		},
 		Subjects: []rbacv1.Subject{{
 			Kind:      rbacv1.ServiceAccountKind,
-			Name:      deployerRoleBinding,
+			Name:      name,
 			Namespace: targetNs,
 		}},
 	})

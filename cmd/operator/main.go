@@ -209,11 +209,13 @@ func main() {
 		defaultDeployTimeout = d
 	}
 
+	deployerSA := cmp.Or(cfg.Deployer.ServiceAccount, os.Getenv("PETRI_DEPLOYER_SA"), "petri-deployer")
+
 	jobDeployer := &deployer.JobDeployer{
 		Client:         mgr.GetClient(),
 		Reader:         mgr.GetAPIReader(),
 		Image:          cmp.Or(cfg.Deployer.Image, os.Getenv("PETRI_DEPLOYER_IMAGE")),
-		ServiceAccount: cmp.Or(cfg.Deployer.ServiceAccount, os.Getenv("PETRI_DEPLOYER_SA"), "petri-deployer"),
+		ServiceAccount: deployerSA,
 		Deadline:       deadline,
 	}
 
@@ -227,16 +229,18 @@ func main() {
 			Reader:   mgr.GetAPIReader(),
 			Deadline: deadline,
 		},
-		Checker:              readiness.NewChecker(mgr.GetClient()),
-		DefaultDeployTimeout: defaultDeployTimeout,
+		Checker:                readiness.NewChecker(mgr.GetClient()),
+		DefaultDeployTimeout:   defaultDeployTimeout,
+		DeployerServiceAccount: deployerSA,
 	}).SetupWithManager(mgr, rl); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "ephemeralenvironment")
 		os.Exit(1)
 	}
 	if err := (&controller.SharedComponentReconciler{
-		Client:   mgr.GetClient(),
-		Scheme:   mgr.GetScheme(),
-		Deployer: jobDeployer,
+		Client:                 mgr.GetClient(),
+		Scheme:                 mgr.GetScheme(),
+		Deployer:               jobDeployer,
+		DeployerServiceAccount: deployerSA,
 	}).SetupWithManager(mgr, rl); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "sharedcomponent")
 		os.Exit(1)

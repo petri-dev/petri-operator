@@ -68,6 +68,15 @@ func Load(path string) (Config, error) {
 			return Config{}, fmt.Errorf("controllers.%s must be non-negative", field.name)
 		}
 	}
+	if c.Controllers.MaxConcurrentReconciles < 0 {
+		return Config{}, fmt.Errorf("controllers.maxConcurrentReconciles must be non-negative, got %d", c.Controllers.MaxConcurrentReconciles)
+	}
+	if c.Controllers.QPS < 0 {
+		return Config{}, fmt.Errorf("controllers.qps must be non-negative, got %v", c.Controllers.QPS)
+	}
+	if c.Controllers.Burst < 0 {
+		return Config{}, fmt.Errorf("controllers.burst must be non-negative, got %d", c.Controllers.Burst)
+	}
 	c.applyDefaults()
 	return c, nil
 }

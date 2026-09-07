@@ -119,6 +119,11 @@ type EphemeralEnvironmentReconciler struct {
 
 	// DefaultDeployTimeout is the readiness timeout used when a template doesnt set spec.deployTimeout. Zero falls back to defaultDeployTimeout.
 	DefaultDeployTimeout time.Duration
+
+	// DeployerServiceAccount is the SA name that deploy Jobs run as.
+	// The controller creates this SA and its RoleBinding in each target namespace.
+	// Empty falls back to the "petri-deployer" default.
+	DeployerServiceAccount string
 }
 
 // +kubebuilder:rbac:groups=core.petri.run,resources=ephemeralenvironments,verbs=get;list;watch;create;update;patch;delete
@@ -164,6 +169,10 @@ func (r *EphemeralEnvironmentReconciler) reconcile(ctx context.Context, env *v1a
 	var deadline *time.Time
 
 	oldPhase := env.Status.Phase
+	// Phases this reconcile moves through, in order. We record metrics/Events
+	// for them only after the status PATCH succeeds (see below), so a failed
+	// write never double-counts a transition on the next attempt.
+	var passedPhases []v1alpha1.Phase
 
 	patcher := helpers.NewStatusPatcher(r.Client, env)
 	defer func() {
@@ -176,8 +185,12 @@ func (r *EphemeralEnvironmentReconciler) reconcile(ctx context.Context, env *v1a
 				res.RequeueAfter = remaining
 			}
 		}
-		recordPhaseTransition(r.Recorder, env, oldPhase)
-		err = errors.Join(err, patcher.Patch(ctx, env))
+		passedPhases = append(passedPhases, env.Status.Phase)
+		if patchErr := patcher.Patch(ctx, env); patchErr != nil {
+			err = errors.Join(err, patchErr)
+			return
+		}
+		recordPhaseTransitions(r.Recorder, env, oldPhase, passedPhases)
 	}()
 
 	if env.Status.ObservedGeneration != env.Generation {
@@ -274,8 +287,10 @@ func (r *EphemeralEnvironmentReconciler) reconcile(ctx context.Context, env *v1a
 		// we only get here when starting (or restarting) a deploy, so record when it began.
 		env.Status.DeployStartedAt = new(metav1.Now())
 		env.Status.Phase = v1alpha1.PhaseDeploying
-		recordPhaseTransition(r.Recorder, env, oldPhase)
-		oldPhase = env.Status.Phase
+		// Remember the intermediate Deploying; the deferred block replays it
+		// after the PATCH succeeds. The env may settle back to Ready below in
+		// the same reconcile, but this keeps the Deploying leg visible.
+		passedPhases = append(passedPhases, v1alpha1.PhaseDeploying)
 	}
 
 	if firstPending >= 0 {
@@ -297,8 +312,13 @@ func (r *EphemeralEnvironmentReconciler) reconcileDelete(ctx context.Context, en
 
 	patcher := helpers.NewStatusPatcher(r.Client, env)
 	defer func() {
+		if patchErr := patcher.Patch(ctx, env); patchErr != nil {
+			err = errors.Join(err, patchErr)
+			return
+		}
+		// Record only after the PATCH lands, so a failed write doesn't count a
+		// transition the next attempt would count again.
 		recordPhaseTransition(r.Recorder, env, oldPhase)
-		err = errors.Join(err, patcher.Patch(ctx, env))
 	}()
 
 	log := logf.FromContext(ctx)
@@ -488,15 +508,16 @@ func (r *EphemeralEnvironmentReconciler) deprovisionShared(ctx context.Context, 
 }
 
 func (r *EphemeralEnvironmentReconciler) ensureDeployerRoleBinding(ctx context.Context, targetNs string) error {
+	name := cmp.Or(r.DeployerServiceAccount, deployerRoleBinding)
 	sa := &corev1.ServiceAccount{
-		ObjectMeta: metav1.ObjectMeta{Name: deployerRoleBinding, Namespace: targetNs},
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: targetNs},
 	}
 	if err := r.Create(ctx, sa); err != nil && !apierrors.IsAlreadyExists(err) {
 		return err
 	}
 
 	rb := &rbacv1.RoleBinding{}
-	err := r.Get(ctx, client.ObjectKey{Namespace: targetNs, Name: deployerRoleBinding}, rb)
+	err := r.Get(ctx, client.ObjectKey{Namespace: targetNs, Name: name}, rb)
 	if err == nil {
 		return nil
 	}
@@ -506,7 +527,7 @@ func (r *EphemeralEnvironmentReconciler) ensureDeployerRoleBinding(ctx context.C
 	}
 
 	rb = &rbacv1.RoleBinding{
-		ObjectMeta: metav1.ObjectMeta{Name: deployerRoleBinding, Namespace: targetNs},
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: targetNs},
 		RoleRef: rbacv1.RoleRef{
 			APIGroup: rbacv1.GroupName,
 			Kind:     "ClusterRole",
@@ -514,7 +535,7 @@ func (r *EphemeralEnvironmentReconciler) ensureDeployerRoleBinding(ctx context.C
 		},
 		Subjects: []rbacv1.Subject{{
 			Kind:      rbacv1.ServiceAccountKind,
-			Name:      deployerRoleBinding,
+			Name:      name,
 			Namespace: targetNs,
 		}},
 	}
