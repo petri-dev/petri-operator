@@ -178,14 +178,20 @@ docker-buildx: ## Build and push docker image for the manager for cross-platform
 	- $(CONTAINER_TOOL) buildx rm petri-builder
 	rm Dockerfile.cross
 
+define image-set-flags
+	op="$(IMG)"; dep="$(DEPLOYER_IMG)"; \
+	printf '%s\n' \
+		"--set-string" "operator.image.repository=$${op%:*}" \
+		"--set-string" "operator.image.tag=$${op##*:}" \
+		"--set-string" "deployer.image.repository=$${dep%:*}" \
+		"--set-string" "deployer.image.tag=$${dep##*:}"
+endef
+
 .PHONY: build-installer
 build-installer: manifests generate ## Generate a consolidated install YAML (CRDs + operator) from the Helm chart.
 	mkdir -p dist
-	$(HELM) template petri charts/petri --namespace petri-system \
-		--set-string operator.image.repository="$(word 1,$(subst :, ,$(IMG)))" \
-		--set-string operator.image.tag="$(word 2,$(subst :, ,$(IMG)))" \
-		--set-string deployer.image.repository="$(word 1,$(subst :, ,$(DEPLOYER_IMG)))" \
-		--set-string deployer.image.tag="$(word 2,$(subst :, ,$(DEPLOYER_IMG)))" \
+	set -eu; $(call image-set-flags) | xargs $(HELM) template petri charts/petri --namespace petri-system \
+		--set namespace.create=true \
 		> dist/install.yaml
 
 ##@ Deployment
@@ -207,13 +213,8 @@ uninstall: manifests ## Remove the CRDs from the cluster. Call with ignore-not-f
 
 .PHONY: deploy
 deploy: manifests ## Deploy the operator to the cluster via helm. Pass HELM_EXTRA_ARGS for extra --set flags.
-	$(HELM) upgrade --install $(HELM_RELEASE) charts/petri \
-		--namespace $(HELM_NAMESPACE) --create-namespace \
-		--set-string operator.image.repository="$(word 1,$(subst :, ,$(IMG)))" \
-		--set-string operator.image.tag="$(word 2,$(subst :, ,$(IMG)))" \
-		--set-string deployer.image.repository="$(word 1,$(subst :, ,$(DEPLOYER_IMG)))" \
-		--set-string deployer.image.tag="$(word 2,$(subst :, ,$(DEPLOYER_IMG)))" \
-		$(HELM_EXTRA_ARGS)
+	set -eu; $(call image-set-flags) | xargs $(HELM) upgrade --install $(HELM_RELEASE) charts/petri \
+		--namespace $(HELM_NAMESPACE) --create-namespace $(HELM_EXTRA_ARGS)
 
 .PHONY: undeploy
 undeploy: ## Uninstall the operator release from the cluster (leaves CRDs in place).

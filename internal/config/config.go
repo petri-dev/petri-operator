@@ -41,8 +41,6 @@ type Deployer struct {
 	ServiceAccount string `json:"serviceAccount,omitempty"`
 }
 
-const defaultServiceAccount = "petri-deployer"
-
 func Load(path string) (Config, error) {
 	var c Config
 	if path != "" {
@@ -84,9 +82,6 @@ func (c *Config) applyDefaults() {
 	}
 	if c.Controllers.Burst == 0 {
 		c.Controllers.Burst = rl.Burst
-	}
-	if c.Deployer.ServiceAccount == "" {
-		c.Deployer.ServiceAccount = defaultServiceAccount
 	}
 
 	// NOTE: DefaultDeployTimeout and JobDeadline are controller package responsibility.

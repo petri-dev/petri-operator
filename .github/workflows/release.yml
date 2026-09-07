@@ -56,3 +56,9 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish Helm chart
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          helm package charts/petri --version "$version" --app-version "$GITHUB_REF_NAME" --destination dist
+          helm push "dist/petri-$version.tgz" oci://ghcr.io/petri-dev/charts

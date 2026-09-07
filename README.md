@@ -23,7 +23,7 @@ kubectl apply -f https://github.com/petri-dev/petri-operator/releases/latest/dow
 
 Both use matching versioned images from `ghcr.io/petri-dev/petri-operator` and `ghcr.io/petri-dev/petri-deployer`. Select a specific release (Helm `--version`, or a pinned release URL) to pin the installation.
 
-CRDs are installed once and are not removed on `helm uninstall` or `kubectl delete`, which keeps your `EphemeralEnvironment`s from being torn down. When upgrading to a new release, apply that release's `crds.yaml` before `helm upgrade` to pick up schema changes.
+The CRDs carry the `helm.sh/resource-policy: keep` annotation, so `helm uninstall` leaves them (and therefore your `EphemeralEnvironment`s) in place. That guarantee is Helm-only: `kubectl delete -f install.yaml` will delete the CRDs and cascade-delete every `EphemeralEnvironment` with them, so to remove the operator installed from the standalone manifest, delete the individual resources rather than the whole file, or keep the CRDs out of the delete. When upgrading to a new release, apply that release's `crds.yaml` before `helm upgrade` to pick up schema changes.
 
 Apply the runnable sample:
 

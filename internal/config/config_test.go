@@ -23,8 +23,8 @@ func TestLoad_EmptyPathUsesDefaults(t *testing.T) {
 	if c.Controllers.Burst != 100 {
 		t.Errorf("Burst: got %d, want 100", c.Controllers.Burst)
 	}
-	if c.Deployer.ServiceAccount != defaultServiceAccount {
-		t.Errorf("ServiceAccount: got %q, want %q", c.Deployer.ServiceAccount, defaultServiceAccount)
+	if c.Deployer.ServiceAccount != "" {
+		t.Errorf("ServiceAccount: got %q, want empty (logically fallback happens in main func)", c.Deployer.ServiceAccount)
 	}
 	if c.LeaderElection.Enabled {
 		t.Error("LeaderElection.Enabled: got true, want false (zero value)")
@@ -58,8 +58,8 @@ controllers:
 	if c.Controllers.QPS != 10 || c.Controllers.Burst != 100 {
 		t.Errorf("defaults not applied to unset fields: QPS=%v Burst=%d", c.Controllers.QPS, c.Controllers.Burst)
 	}
-	if c.Deployer.ServiceAccount != defaultServiceAccount {
-		t.Errorf("ServiceAccount default not applied: %q", c.Deployer.ServiceAccount)
+	if c.Deployer.ServiceAccount != "" {
+		t.Errorf("ServiceAccount should stay empty in Load: %q", c.Deployer.ServiceAccount)
 	}
 }
 

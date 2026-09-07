@@ -1,0 +1,12 @@
+{{- /*
+Only rendered when namespace.create is set (the standalone install.yaml does this).
+`helm install --create-namespace` covers the Helm path, so this stays off by default to avoid a duplicate object Helm doesn't own.
+*/ -}}
+{{- if .Values.namespace.create }}
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ .Values.namespace.name | default .Release.Namespace }}
+  labels:
+    {{- include "petri.labels" . | nindent 4 }}
+{{- end }}

@@ -213,7 +213,7 @@ func main() {
 		Client:         mgr.GetClient(),
 		Reader:         mgr.GetAPIReader(),
 		Image:          cmp.Or(cfg.Deployer.Image, os.Getenv("PETRI_DEPLOYER_IMAGE")),
-		ServiceAccount: cmp.Or(cfg.Deployer.ServiceAccount, os.Getenv("PETRI_DEPLOYER_SA")),
+		ServiceAccount: cmp.Or(cfg.Deployer.ServiceAccount, os.Getenv("PETRI_DEPLOYER_SA"), "petri-deployer"),
 		Deadline:       deadline,
 	}
 
