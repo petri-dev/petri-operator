@@ -212,9 +212,9 @@ uninstall: manifests ## Remove the CRDs from the cluster. Call with ignore-not-f
 	$(HELM) template petri charts/petri --show-only templates/crds.yaml | $(KUBECTL) delete --ignore-not-found=$(ignore-not-found) -f -
 
 .PHONY: deploy
-deploy: manifests ## Deploy the operator to the cluster via helm. Pass HELM_EXTRA_ARGS for extra --set flags.
+deploy: install ## Deploy the operator via helm. CRDs are managed separately (via `install`, applied with kubectl), so the release is rendered with crds.enabled=false to avoid Helm ownership conflicts. Pass HELM_EXTRA_ARGS for extra --set flags.
 	set -eu; $(call image-set-flags) | xargs $(HELM) upgrade --install $(HELM_RELEASE) charts/petri \
-		--namespace $(HELM_NAMESPACE) --create-namespace $(HELM_EXTRA_ARGS)
+		--namespace $(HELM_NAMESPACE) --create-namespace --set crds.enabled=false $(HELM_EXTRA_ARGS)
 
 .PHONY: undeploy
 undeploy: ## Uninstall the operator release from the cluster (leaves CRDs in place).

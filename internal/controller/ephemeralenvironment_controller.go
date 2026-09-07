@@ -254,24 +254,33 @@ func (r *EphemeralEnvironmentReconciler) reconcile(ctx context.Context, env *v1a
 		return ctrl.Result{}, nil
 	}
 
-	if env.Status.Phase != v1alpha1.PhaseReady && env.Status.Phase != v1alpha1.PhaseDeploying {
+	phaseByName := make(map[string]v1alpha1.Phase, len(env.Status.Components))
+	for _, cs := range env.Status.Components {
+		phaseByName[cs.Name] = cs.Phase
+	}
+
+	firstPending := -1
+	for i, level := range componentsByLevel {
+		if !allReady(level, phaseByName) {
+			firstPending = i
+			break
+		}
+	}
+
+	// enter Deploying if there is pending work, or the env isnt Ready yet. We check components directly rather than trusting the phase: a new component
+	// in the template doesnt bump the env generation, so a Ready env can gain work with no signal on the env itself.
+	if env.Status.Phase != v1alpha1.PhaseDeploying &&
+		(firstPending >= 0 || env.Status.Phase != v1alpha1.PhaseReady) {
+		// we only get here when starting (or restarting) a deploy, so record when it began.
 		env.Status.DeployStartedAt = new(metav1.Now())
 		env.Status.Phase = v1alpha1.PhaseDeploying
 		recordPhaseTransition(r.Recorder, env, oldPhase)
 		oldPhase = env.Status.Phase
 	}
 
-	phaseByName := make(map[string]v1alpha1.Phase, len(env.Status.Components))
-	for _, cs := range env.Status.Components {
-		phaseByName[cs.Name] = cs.Phase
-	}
-
-	for i, level := range componentsByLevel {
-		if allReady(level, phaseByName) {
-			log.V(1).Info("level already ready, advancing", "level", i)
-			continue
-		}
-
+	if firstPending >= 0 {
+		level := componentsByLevel[firstPending]
+		log.V(1).Info("processing first pending level", "level", firstPending)
 		return r.processLevel(ctx, env, targetNs, level, phaseByName, deployTimeout)
 	}
 

@@ -201,6 +201,42 @@ var _ = Describe("EphemeralEnvironment Controller", func() {
 		})
 	})
 
+	Context("template gains a component after Ready", func() {
+		It("leaves Ready and redeploys the new component", func() {
+			fd := newFakeDeployer()
+			fc := newFakeChecker()
+			r := newReconciler(fd, fc)
+
+			makeTemplate(testNS, "grow-tmpl", []corev1alpha1.ComponentSpec{
+				{Name: "svc", Helm: helmSpec()},
+			})
+			key := makeEnv(testNS, "grow-1", "grow-tmpl")
+
+			fd.setOutcome("grow-1-svc", deployer.SucceededJobPhase, "")
+			fc.setReady("grow-1-svc", true)
+
+			Expect(reconcileUntilTerminal(r, key, 20)).To(Equal(corev1alpha1.PhaseReady))
+			genAtReady := getEnv(key).Generation
+
+			tmpl := &corev1alpha1.EnvironmentTemplate{}
+			Expect(k8sClient.Get(tctx, types.NamespacedName{Namespace: testNS, Name: "grow-tmpl"}, tmpl)).To(Succeed())
+			tmpl.Spec.Components = append(tmpl.Spec.Components, corev1alpha1.ComponentSpec{Name: "svc2", Helm: helmSpec()})
+			Expect(k8sClient.Update(tctx, tmpl)).To(Succeed())
+
+			_, err := r.Reconcile(tctx, reconcile.Request{NamespacedName: key})
+			Expect(err).NotTo(HaveOccurred())
+			env := getEnv(key)
+			Expect(env.Generation).To(Equal(genAtReady), "env spec unchanged")
+			Expect(env.Status.Phase).To(Equal(corev1alpha1.PhaseDeploying),
+				"env must redeploy, not keep reporting Ready while svc2 is pending")
+
+			fd.setOutcome("grow-1-svc2", deployer.SucceededJobPhase, "")
+			fc.setReady("grow-1-svc2", true)
+			Expect(reconcileUntilTerminal(r, key, 20)).To(Equal(corev1alpha1.PhaseReady))
+			Expect(fd.SubmitCount("grow-1-svc2")).To(Equal(1))
+		})
+	})
+
 	Context("automatic lifecycle cleanup", func() {
 		DescribeTable("resolves the effective TTL",
 			func(templateTTL, envTTL string, wantTTL time.Duration, wantReason string) {
