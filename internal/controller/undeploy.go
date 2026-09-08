@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 	"errors"
+	"strings"
 
 	"github.com/petri-dev/petri-operator/api/v1alpha1"
 	"github.com/petri-dev/petri-operator/internal/deployer"
@@ -63,6 +64,14 @@ func (r *EphemeralEnvironmentReconciler) observeUndeployLevel(ctx context.Contex
 
 	states := make([]deployer.JobState, len(level))
 	obsErrs := r.eachComponent(ctx, level, func(gctx context.Context, i int, c v1alpha1.ComponentSpec) error {
+		if c.SharedComponentRef != "" {
+			states[i] = deployer.JobState{Phase: deployer.SucceededJobPhase}
+			return nil
+		}
+		if cs := findComponent(env, c.Name); cs != nil && cs.DeployRetries >= maxDeployRetries && strings.HasPrefix(cs.LastFailureReason, "undeploy: ") {
+			states[i] = deployer.JobState{Phase: deployer.SucceededJobPhase}
+			return nil
+		}
 		st, err := r.Deployer.ObserveUndeploy(gctx, r.deployOpts(env, targetNs, c))
 		states[i] = st
 		return err
@@ -76,6 +85,8 @@ func (r *EphemeralEnvironmentReconciler) observeUndeployLevel(ctx context.Contex
 
 		switch states[i].Phase {
 		case deployer.SucceededJobPhase:
+		case deployer.RunningJobPhase:
+			levelDone = false
 		case deployer.FailedJobPhase:
 			if recordRuntimeFailure(env, component.Name, "undeploy: "+states[i].Reason) {
 				log.Error(errors.New(states[i].Reason), "undeploy exhausted retries, forcing cleanup",

@@ -5,14 +5,15 @@
 crds:
   enabled: true
 
-# namespace.create emits a Namespace object into the rendered manifests. Off by default because `helm install --create-namespace` already handles it.
+# namespace.create emits the release Namespace into the rendered manifests. Off by default because `helm install --create-namespace` already handles it.
 # the standalone install.yaml (build-installer) sets this true so `kubectl apply` on a clean cluster creates the namespace before the namespaced resources.
 namespace:
   create: false
-  name: petri-system
 
 operator:
   image:
+    # Full reference overrides repository/tag; supports registry ports and @sha256 digests.
+    reference: ""
     repository: ghcr.io/petri-dev/petri-operator
     # tag defaults to .Chart.AppVersion when empty
     tag: ""
@@ -31,6 +32,7 @@ operator:
 
 deployer:
   image:
+    reference: ""
     repository: ghcr.io/petri-dev/petri-deployer
     # tag defaults to .Chart.AppVersion when empty; wired into PETRI_DEPLOYER_IMAGE
     tag: ""

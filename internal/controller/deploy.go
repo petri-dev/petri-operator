@@ -115,7 +115,6 @@ func (r *EphemeralEnvironmentReconciler) submitDeploys(ctx context.Context, env 
 		if err == nil {
 			// deploy Job submitted; wait for it via Observe on the next pass
 			setComponentPhase(env, component.Name, v1alpha1.PhaseSubmitting)
-			resetComponentFailure(env, component.Name)
 			continue
 		}
 
@@ -149,11 +148,20 @@ func (r *EphemeralEnvironmentReconciler) submitDeploys(ctx context.Context, env 
 
 func (r *EphemeralEnvironmentReconciler) observeDeploys(ctx context.Context, env *v1alpha1.EphemeralEnvironment, targetNs string, submitting []v1alpha1.ComponentSpec) (res ctrl.Result, handled bool, err error) {
 	log := logf.FromContext(ctx)
+	template, err := r.getEnvironmentTemplate(ctx, env)
+	if err != nil {
+		return ctrl.Result{}, true, err
+	}
+	components, err := r.bindingComponents(ctx, env, targetNs, template)
+	if err != nil {
+		return ctrl.Result{}, true, err
+	}
 
 	stillRunning := false
 	retrying := false
 	for _, component := range submitting {
 		if component.SharedComponentRef != "" {
+			previousRetries := findComponent(env, component.Name).DeployRetries
 			done, err := r.observeShared(ctx, env, component)
 			if err != nil {
 				return ctrl.Result{}, true, err
@@ -161,15 +169,25 @@ func (r *EphemeralEnvironmentReconciler) observeDeploys(ctx context.Context, env
 			if !done {
 				stillRunning = true
 			}
+			if findComponent(env, component.Name).DeployRetries > previousRetries {
+				retrying = true
+			}
 			continue
 		}
 
-		st, err := r.Deployer.Observe(ctx, r.deployOpts(env, targetNs, component))
+		rendered, err := renderConsumerValues(env, component, components)
+		if err != nil {
+			return ctrl.Result{}, true, err
+		}
+		st, err := r.Deployer.Observe(ctx, r.deployOpts(env, targetNs, rendered))
 		if err != nil {
 			return ctrl.Result{}, true, err
 		}
 
 		switch st.Phase {
+		case deployer.PendingJobPhase:
+			setComponentPhase(env, component.Name, v1alpha1.PhasePending)
+			stillRunning = true
 		case deployer.SucceededJobPhase:
 			setComponentPhase(env, component.Name, v1alpha1.PhaseDeploying)
 			setComponentDeployingSince(env, component.Name, metav1.Now())
@@ -201,6 +219,7 @@ func (r *EphemeralEnvironmentReconciler) checkReadiness(ctx context.Context, env
 	log := logf.FromContext(ctx)
 
 	allDone := true
+	retrying := false
 	for _, component := range needCheck {
 		if since := componentDeployingSince(env, component.Name); since != nil && time.Since(since.Time) > deployTimeout {
 			if recordRuntimeFailure(env, component.Name, "readiness timeout after "+deployTimeout.String()) {
@@ -209,6 +228,7 @@ func (r *EphemeralEnvironmentReconciler) checkReadiness(ctx context.Context, env
 					fmt.Sprintf("%s did not become ready within %s (retries exhausted)", component.Name, deployTimeout))
 			}
 			log.Info("readiness timed out, will resubmit", "component", component.Name)
+			retrying = true
 			continue
 		}
 
@@ -226,9 +246,13 @@ func (r *EphemeralEnvironmentReconciler) checkReadiness(ctx context.Context, env
 		}
 	}
 
+	if retrying {
+		return ctrl.Result{RequeueAfter: deployBackoff(env, needCheck)}, nil
+	}
 	if allDone {
 		return ctrl.Result{RequeueAfter: requeueImmediate}, nil
 	}
+
 	return ctrl.Result{RequeueAfter: requeueAfter}, nil
 }
 
@@ -248,10 +272,16 @@ func (r *EphemeralEnvironmentReconciler) eachComponent(ctx context.Context, comp
 
 // deployOpts builds the DeployOptions for a component's release.
 func (r *EphemeralEnvironmentReconciler) deployOpts(env *v1alpha1.EphemeralEnvironment, targetNs string, c v1alpha1.ComponentSpec) deployer.DeployOptions {
+	var attempt int32
+	if cs := findComponent(env, c.Name); cs != nil {
+		attempt = cs.DeployRetries
+	}
 	return deployer.DeployOptions{
+		OwnerUID:    env.UID,
 		Namespace:   targetNs,
 		ReleaseName: env.Name + "-" + c.Name,
 		Component:   c,
+		Attempt:     attempt,
 	}
 }
 

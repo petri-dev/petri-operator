@@ -6,7 +6,7 @@ Only rendered when namespace.create is set (the standalone install.yaml does thi
 apiVersion: v1
 kind: Namespace
 metadata:
-  name: {{ .Values.namespace.name | default .Release.Namespace }}
+  name: {{ .Release.Namespace }}
   labels:
     {{- include "petri.labels" . | nindent 4 }}
 {{- end }}

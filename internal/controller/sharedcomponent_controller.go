@@ -48,8 +48,9 @@ const (
 // SharedComponentReconciler reconciles a SharedComponent object.
 type SharedComponentReconciler struct {
 	client.Client
-	Scheme   *runtime.Scheme
-	Deployer deployer.Deployer
+	APIReader client.Reader
+	Scheme    *runtime.Scheme
+	Deployer  deployer.Deployer
 
 	// DeployerServiceAccount is the ServiceAccount name that deploy Jobs run as;
 	// the controller creates it and its RoleBinding per target namespace. Empty
@@ -136,6 +137,7 @@ func (r *SharedComponentReconciler) reconcile(ctx context.Context, sc *v1alpha1.
 	}
 
 	opts := deployer.DeployOptions{
+		OwnerUID:    sc.UID,
 		Namespace:   sharedNamespace,
 		ReleaseName: "shared-" + sc.Name,
 		Component:   v1alpha1.ComponentSpec{Name: sc.Name, Helm: scp.Spec.Helm},
@@ -144,6 +146,13 @@ func (r *SharedComponentReconciler) reconcile(ctx context.Context, sc *v1alpha1.
 	state, err := r.Deployer.Observe(ctx, opts)
 	if err != nil {
 		return ctrl.Result{}, err
+	}
+	if state.Phase != deployer.SucceededJobPhase {
+		sc.Status.Ready = false
+		meta.SetStatusCondition(&sc.Status.Conditions, metav1.Condition{
+			Type: "Ready", Status: metav1.ConditionFalse, Reason: "Deploying",
+			Message: "shared instance deployment in progress", ObservedGeneration: sc.Generation,
+		})
 	}
 
 	switch state.Phase {
@@ -164,13 +173,11 @@ func (r *SharedComponentReconciler) reconcile(ctx context.Context, sc *v1alpha1.
 			Message:            state.Reason,
 			ObservedGeneration: sc.Generation,
 		})
+		if err := r.Deployer.Submit(ctx, opts); err != nil {
+			return ctrl.Result{}, err
+		}
 		return ctrl.Result{RequeueAfter: requeueAfter}, nil
 	case deployer.SucceededJobPhase:
-		deployJobName := deployer.TruncateName("petri-deploy-shared-" + sc.Name)
-		job := &batchv1.Job{ObjectMeta: metav1.ObjectMeta{Name: deployJobName, Namespace: sharedNamespace}}
-		if err := client.IgnoreNotFound(r.Delete(ctx, job, client.PropagationPolicy(metav1.DeletePropagationBackground))); err != nil {
-			log.Error(err, "failed to delete deploy job", "job", deployJobName)
-		}
 		sc.Status.Ready = true
 		meta.SetStatusCondition(&sc.Status.Conditions, metav1.Condition{
 			Type:               "Ready",
@@ -251,9 +258,25 @@ func (r *SharedComponentReconciler) reconcileDelete(ctx context.Context, sc *v1a
 	}
 
 	opts := deployer.DeployOptions{
+		OwnerUID:    sc.UID,
 		Namespace:   sharedNamespace,
 		ReleaseName: "shared-" + sc.Name,
 	}
+	// Absence must be live: a cache miss cannot authorize racing an install.
+	reader := r.APIReader
+	if reader == nil {
+		reader = r.Client
+	}
+	job := new(batchv1.Job)
+	if err := reader.Get(ctx, client.ObjectKey{Namespace: opts.Namespace, Name: deployer.DeployJobName(opts.ReleaseName)}, job); err == nil {
+		if !job.DeletionTimestamp.IsZero() || deployer.TerminalPhase(job) == deployer.RunningJobPhase {
+			return ctrl.Result{RequeueAfter: requeueAfter}, nil
+		}
+	} else if !apierrors.IsNotFound(err) {
+		return ctrl.Result{}, err
+	}
+	retries, _ := strconv.ParseInt(sc.Annotations[uninstallRetriesAnnotation], 10, 32)
+	opts.Attempt = int32(retries)
 
 	state, err := r.Deployer.ObserveUndeploy(ctx, opts)
 	if err != nil {
@@ -267,7 +290,6 @@ func (r *SharedComponentReconciler) reconcileDelete(ctx context.Context, sc *v1a
 		}
 		return ctrl.Result{RequeueAfter: requeueAfter}, nil
 	case deployer.FailedJobPhase:
-		retries, _ := strconv.Atoi(sc.Annotations[uninstallRetriesAnnotation])
 		retries++
 		log.Info("shared component uninstall job failed", "retries", retries, "maxRetries", maxDeployRetries)
 		if retries >= maxDeployRetries {
@@ -280,11 +302,8 @@ func (r *SharedComponentReconciler) reconcileDelete(ctx context.Context, sc *v1a
 		if sc.Annotations == nil {
 			sc.Annotations = map[string]string{}
 		}
-		sc.Annotations[uninstallRetriesAnnotation] = strconv.Itoa(retries)
+		sc.Annotations[uninstallRetriesAnnotation] = strconv.FormatInt(retries, 10)
 		if err := r.Patch(ctx, sc, patch); err != nil {
-			return ctrl.Result{}, err
-		}
-		if err := r.Deployer.SubmitUndeploy(ctx, opts); err != nil {
 			return ctrl.Result{}, err
 		}
 		return ctrl.Result{RequeueAfter: requeueAfter}, nil
@@ -358,6 +377,7 @@ func (r *SharedComponentReconciler) ensureDeployerRoleBinding(ctx context.Contex
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *SharedComponentReconciler) SetupWithManager(mgr ctrl.Manager, rl RateLimitOptions) error {
+	r.APIReader = mgr.GetAPIReader()
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&v1alpha1.SharedComponent{}).
 		Named("sharedcomponent").

@@ -307,8 +307,43 @@ var _ = Describe("EphemeralEnvironment", func() {
 		}
 		return strings.TrimSpace(out)
 	}
+	targetNamespace := func() string {
+		cmd := exec.Command("kubectl", "get", "ephemeralenvironment", envName,
+			"-n", envNS, "-o", "jsonpath={.status.targetNamespace}")
+		out, err := utils.Run(cmd)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(strings.TrimSpace(out)).To(MatchRegexp(`^petri-env-[0-9a-f]{8,52}$`))
+		return strings.TrimSpace(out)
+	}
 
 	Context("single service", func() {
+		It("applies a values spec update through a new deploy Job", func() {
+			applyFixture("single_service.yaml")
+			Eventually(envPhase).Should(Equal("Ready"))
+			targetNs := targetNamespace()
+			jobName := "petri-deploy-" + envName + "-svc"
+			originalUID, err := utils.Run(exec.Command("kubectl", "get", "job", jobName, "-n", targetNs, "-o", "jsonpath={.metadata.uid}"))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(originalUID).NotTo(BeEmpty())
+
+			By("changing actual Helm values rather than only waiting for Ready again")
+			_, err = utils.Run(exec.Command("kubectl", "patch", "ephemeralenvironment", envName, "-n", envNS,
+				"--type=merge", "-p", `{"spec":{"values":{"replicaCount":"2"}}}`))
+			Expect(err).NotTo(HaveOccurred())
+			Eventually(func(g Gomega) {
+				uid, err := utils.Run(exec.Command("kubectl", "get", "job", jobName, "-n", targetNs, "-o", "jsonpath={.metadata.uid}"))
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(uid).NotTo(BeEmpty())
+				g.Expect(uid).NotTo(Equal(originalUID))
+				replicas, err := utils.Run(exec.Command("kubectl", "get", "deployment", envName+"-svc", "-n", targetNs,
+					"-o", "jsonpath={.spec.replicas}/{.status.readyReplicas}"))
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(replicas).To(Equal("2/2"))
+				g.Expect(envPhase()).To(Equal("Ready"))
+			}).Should(Succeed())
+			Expect(targetNamespace()).To(Equal(targetNs))
+		})
+
 		It("reaches Ready and namespace is labelled", func() {
 			applyFixture("single_service.yaml")
 
@@ -316,7 +351,8 @@ var _ = Describe("EphemeralEnvironment", func() {
 			Eventually(envPhase).Should(Equal("Ready"))
 
 			By("asserting the target namespace exists and is labelled managed")
-			cmd := exec.Command("kubectl", "get", "namespace", "petri-"+envName,
+			targetNs := targetNamespace()
+			cmd := exec.Command("kubectl", "get", "namespace", targetNs,
 				"-o", "jsonpath={.metadata.labels.petri\\.run/managed}")
 			out, err := utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
@@ -324,7 +360,7 @@ var _ = Describe("EphemeralEnvironment", func() {
 
 			By("asserting a deploy Job completed successfully")
 			cmd = exec.Command("kubectl", "get", "jobs",
-				"-n", "petri-"+envName,
+				"-n", targetNs,
 				"-o", `jsonpath={range .items[*]}{.status.succeeded}{"\n"}{end}`)
 			out, err = utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
@@ -340,13 +376,14 @@ var _ = Describe("EphemeralEnvironment", func() {
 			Eventually(envPhase).Should(Equal("Ready"))
 
 			By("deleting the EphemeralEnvironment")
+			targetNs := targetNamespace()
 			cmd := exec.Command("kubectl", "delete", "ephemeralenvironment", envName, "-n", envNS)
 			_, err := utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
 
 			By("waiting for target namespace to be gone or terminating")
 			Eventually(func() bool {
-				cmd := exec.Command("kubectl", "get", "namespace", "petri-"+envName,
+				cmd := exec.Command("kubectl", "get", "namespace", targetNs,
 					"-o", "jsonpath={.metadata.deletionTimestamp}")
 				out, err := utils.Run(cmd)
 				return err != nil || strings.TrimSpace(out) != ""
@@ -370,6 +407,7 @@ var _ = Describe("EphemeralEnvironment", func() {
 			}).ShouldNot(BeEmpty())
 
 			By("waiting for the EphemeralEnvironment finalizer to complete")
+			targetNs := targetNamespace()
 			Eventually(func() bool {
 				cmd := exec.Command("kubectl", "get", "ephemeralenvironment", envName, "-n", envNS)
 				_, err := utils.Run(cmd)
@@ -378,7 +416,7 @@ var _ = Describe("EphemeralEnvironment", func() {
 
 			By("waiting for the workload namespace to be removed")
 			Eventually(func() bool {
-				cmd := exec.Command("kubectl", "get", "namespace", "petri-"+envName)
+				cmd := exec.Command("kubectl", "get", "namespace", targetNs)
 				_, err := utils.Run(cmd)
 				return err != nil
 			}, 2*time.Minute, time.Second).Should(BeTrue())
@@ -406,6 +444,29 @@ var _ = Describe("EphemeralEnvironment", func() {
 	Context("bad chart causes terminal Failed", func() {
 		It("retries then reaches terminal Failed with reason", func() {
 			applyFixture("invalid_chart.yaml")
+
+			By("recording a failed Job UID and requiring a real replacement attempt")
+			var failedUID, targetNs string
+			Eventually(func(g Gomega) {
+				out, err := utils.Run(exec.Command("kubectl", "get", "ephemeralenvironment", envName,
+					"-n", envNS, "-o", "jsonpath={.status.targetNamespace}"))
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(out).NotTo(BeEmpty())
+				targetNs = strings.TrimSpace(out)
+				out, err = utils.Run(exec.Command("kubectl", "get", "job", "petri-deploy-"+envName+"-broken", "-n", targetNs,
+					"-o", `jsonpath={.metadata.uid}/{.status.conditions[?(@.type=="Failed")].status}`))
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(out).To(HaveSuffix("/True"))
+				failedUID = strings.TrimSuffix(out, "/True")
+			}, 5*time.Minute, time.Second).Should(Succeed())
+			Expect(failedUID).NotTo(BeEmpty())
+			Eventually(func(g Gomega) {
+				uid, err := utils.Run(exec.Command("kubectl", "get", "job", "petri-deploy-"+envName+"-broken", "-n", targetNs,
+					"-o", "jsonpath={.metadata.uid}"))
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(uid).NotTo(BeEmpty())
+				g.Expect(uid).NotTo(Equal(failedUID))
+			}, 3*time.Minute, time.Second).Should(Succeed())
 
 			By("waiting for terminal Failed (retries exhausted)")
 			Eventually(envPhase, 10*time.Minute, 15*time.Second).Should(Equal("Failed"))

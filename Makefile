@@ -179,20 +179,23 @@ docker-buildx: ## Build and push docker image for the manager for cross-platform
 	rm Dockerfile.cross
 
 define image-set-flags
-	op="$(IMG)"; dep="$(DEPLOYER_IMG)"; \
 	printf '%s\n' \
-		"--set-string" "operator.image.repository=$${op%:*}" \
-		"--set-string" "operator.image.tag=$${op##*:}" \
-		"--set-string" "deployer.image.repository=$${dep%:*}" \
-		"--set-string" "deployer.image.tag=$${dep##*:}"
+		"--set-string" "operator.image.reference=$(IMG)" \
+		"--set-string" "deployer.image.reference=$(DEPLOYER_IMG)"
 endef
+
+INSTALLER_DIR ?= dist
 
 .PHONY: build-installer
 build-installer: manifests generate ## Generate a consolidated install YAML (CRDs + operator) from the Helm chart.
-	mkdir -p dist
+	mkdir -p "$(INSTALLER_DIR)"
 	set -eu; $(call image-set-flags) | xargs $(HELM) template petri charts/petri --namespace petri-system \
 		--set namespace.create=true \
-		> dist/install.yaml
+		> "$(INSTALLER_DIR)/install.yaml"
+
+.PHONY: release-artifacts
+release-artifacts: manifests generate ## Package matched chart, CRDs and installer without publishing. Requires RELEASE_VERSION=vX.Y.Z.
+	HELM="$(HELM)" RELEASE_VERSION="$(RELEASE_VERSION)" bash hack/release-artifacts.sh dist
 
 ##@ Deployment
 

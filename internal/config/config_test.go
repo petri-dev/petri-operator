@@ -104,6 +104,11 @@ func TestLoad_ControllerDurations(t *testing.T) {
 		}{
 			{"", false},
 			{"0s", false},
+			{"1ns", field == "jobDeadline"},
+			{"500ms", field == "jobDeadline"},
+			{"999999999ns", field == "jobDeadline"},
+			{"1s", false},
+			{"1500ms", false},
 			{"20m", false},
 			{"+20m", false},
 			{"-5m", true},

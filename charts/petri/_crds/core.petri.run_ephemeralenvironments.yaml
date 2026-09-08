@@ -196,6 +196,12 @@ spec:
                 - Failed
                 - Terminating
                 type: string
+              targetNamespace:
+                description: TargetNamespace is persisted before creation and remains
+                  stable once NamespaceBound is true.
+                maxLength: 63
+                pattern: ^petri-env-[a-f0-9]{8}([a-f0-9]{4}){0,11}$
+                type: string
               url:
                 type: string
             type: object

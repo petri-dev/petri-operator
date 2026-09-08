@@ -18,6 +18,7 @@ package controller
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"slices"
@@ -136,6 +137,11 @@ func getEnv(key types.NamespacedName) *corev1alpha1.EphemeralEnvironment {
 	return env
 }
 
+func shortNamespace(key types.NamespacedName) string {
+	digest := fmt.Sprintf("%x", sha256.Sum256([]byte(getEnv(key).UID)))
+	return nsPrefix + digest[:8]
+}
+
 func failureReason(env *corev1alpha1.EphemeralEnvironment) string {
 	for _, c := range env.Status.Conditions {
 		if c.Type == "Ready" {
@@ -178,7 +184,7 @@ var _ = Describe("EphemeralEnvironment Controller", func() {
 			Expect(phase).To(Equal(corev1alpha1.PhaseReady))
 
 			targetNs := &corev1.Namespace{}
-			Expect(k8sClient.Get(tctx, types.NamespacedName{Name: "petri-pr-1"}, targetNs)).To(Succeed())
+			Expect(k8sClient.Get(tctx, types.NamespacedName{Name: getEnv(key).Status.TargetNamespace}, targetNs)).To(Succeed())
 			Expect(targetNs.Labels).To(HaveKeyWithValue("petri.run/managed", "true"))
 
 			Expect(fd.SubmitCount(releaseName)).To(Equal(1))
@@ -196,7 +202,7 @@ var _ = Describe("EphemeralEnvironment Controller", func() {
 			}
 
 			ns := &corev1.Namespace{}
-			err := k8sClient.Get(tctx, types.NamespacedName{Name: "petri-pr-1"}, ns)
+			err := k8sClient.Get(tctx, types.NamespacedName{Name: targetNs.Name}, ns)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(ns.DeletionTimestamp).NotTo(BeNil())
 		})
@@ -254,7 +260,7 @@ var _ = Describe("EphemeralEnvironment Controller", func() {
 
 			Expect(reconcileUntilTerminal(r, key, 20)).To(Equal(corev1alpha1.PhaseReady))
 
-			targetNs := nsPrefix + "sa-1"
+			targetNs := getEnv(key).Status.TargetNamespace
 			// The SA the deploy Jobs run as must exist under the configured name,
 			// not the hardcoded default, or Pods can't schedule in the new ns.
 			sa := &corev1.ServiceAccount{}
@@ -283,6 +289,8 @@ var _ = Describe("EphemeralEnvironment Controller", func() {
 				Expect(err).NotTo(HaveOccurred())
 				_, err = r.Reconcile(tctx, reconcile.Request{NamespacedName: key})
 				Expect(err).NotTo(HaveOccurred())
+				_, err = r.Reconcile(tctx, reconcile.Request{NamespacedName: key})
+				Expect(err).NotTo(HaveOccurred())
 
 				env := getEnv(key)
 				if wantReason != "" {
@@ -290,7 +298,7 @@ var _ = Describe("EphemeralEnvironment Controller", func() {
 					Expect(failureReason(env)).To(Equal(wantReason))
 					Expect(fd.submitOrder()).To(BeEmpty())
 					ns := new(corev1.Namespace)
-					err := k8sClient.Get(tctx, types.NamespacedName{Name: nsPrefix + key.Name}, ns)
+					err := k8sClient.Get(tctx, types.NamespacedName{Name: env.Status.TargetNamespace}, ns)
 					Expect(apierrors.IsNotFound(err)).To(BeTrue())
 					return
 				}
@@ -315,8 +323,10 @@ var _ = Describe("EphemeralEnvironment Controller", func() {
 			r := newReconciler(newFakeDeployer(), newFakeChecker())
 			makeTemplate(testNS, "invalidated-ttl-tmpl", []corev1alpha1.ComponentSpec{{Name: "svc", Helm: helmSpec()}})
 			key := makeEnvWithTTL(testNS, "invalidated-ttl", "invalidated-ttl-tmpl", "2h")
-
 			_, err := r.Reconcile(tctx, reconcile.Request{NamespacedName: key})
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = r.Reconcile(tctx, reconcile.Request{NamespacedName: key})
 			Expect(err).NotTo(HaveOccurred())
 			_, err = r.Reconcile(tctx, reconcile.Request{NamespacedName: key})
 			Expect(err).NotTo(HaveOccurred())
@@ -337,8 +347,10 @@ var _ = Describe("EphemeralEnvironment Controller", func() {
 			r := newReconciler(newFakeDeployer(), newFakeChecker())
 			makeTemplateWithTTL(testNS, "deleted-ttl-tmpl", "2h", []corev1alpha1.ComponentSpec{{Name: "svc", Helm: helmSpec()}})
 			key := makeEnv(testNS, "deleted-ttl", "deleted-ttl-tmpl")
-
 			_, err := r.Reconcile(tctx, reconcile.Request{NamespacedName: key})
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = r.Reconcile(tctx, reconcile.Request{NamespacedName: key})
 			Expect(err).NotTo(HaveOccurred())
 			_, err = r.Reconcile(tctx, reconcile.Request{NamespacedName: key})
 			Expect(err).NotTo(HaveOccurred())
@@ -365,6 +377,7 @@ var _ = Describe("EphemeralEnvironment Controller", func() {
 				{Name: "svc", Helm: helmSpec()},
 			})
 			key := makeEnvWithTTL(testNS, "ttl-before-deploy", "ttl-tmpl", "")
+			targetNs := shortNamespace(key)
 
 			_, err := r.Reconcile(tctx, reconcile.Request{NamespacedName: key})
 			Expect(err).NotTo(HaveOccurred())
@@ -374,7 +387,7 @@ var _ = Describe("EphemeralEnvironment Controller", func() {
 
 			Expect(fd.submitOrder()).To(BeEmpty())
 			ns := &corev1.Namespace{}
-			err = k8sClient.Get(tctx, types.NamespacedName{Name: nsPrefix + "ttl-before-deploy"}, ns)
+			err = k8sClient.Get(tctx, types.NamespacedName{Name: targetNs}, ns)
 			Expect(apierrors.IsNotFound(err)).To(BeTrue())
 		})
 
@@ -389,6 +402,10 @@ var _ = Describe("EphemeralEnvironment Controller", func() {
 			key := makeEnvWithTTL(testNS, "ttl-during-deploy", "deploying-ttl-tmpl", "")
 			release := "ttl-during-deploy-svc"
 			fd.setOutcome(release, deployer.PendingJobPhase, "")
+			for range 2 {
+				_, err := r.Reconcile(tctx, reconcile.Request{NamespacedName: key})
+				Expect(err).NotTo(HaveOccurred())
+			}
 
 			_, err := r.Reconcile(tctx, reconcile.Request{NamespacedName: key})
 			Expect(err).NotTo(HaveOccurred())
@@ -542,7 +559,7 @@ var _ = Describe("EphemeralEnvironment Controller", func() {
 
 			cs := findComponent(env, "svc")
 			Expect(cs).NotTo(BeNil())
-			Expect(cs.Phase).To(Equal(corev1alpha1.PhaseSubmitting))
+			Expect(cs.Phase).To(Equal(corev1alpha1.PhasePending))
 
 			fd.setOutcome(release, deployer.SucceededJobPhase, "")
 			phase := reconcileUntilTerminal(r, key, 20)
@@ -648,7 +665,7 @@ var _ = Describe("EphemeralEnvironment Controller", func() {
 			Expect(failureReason(env)).To(Equal("TemplateNotFound"))
 
 			ns := &corev1.Namespace{}
-			err := k8sClient.Get(tctx, types.NamespacedName{Name: "petri-test-s1"}, ns)
+			err := k8sClient.Get(tctx, types.NamespacedName{Name: env.Status.TargetNamespace}, ns)
 			Expect(err).To(HaveOccurred()) // NotFound
 			Expect(fd.submitOrder()).To(BeEmpty())
 		})
@@ -834,7 +851,7 @@ var _ = Describe("EphemeralEnvironment shared component integration", func() {
 			fc.setReady(apiRelease, true)
 
 			key := makeEnv(testNS, envName, "tmpl")
-			targetNs := nsPrefix + envName
+			targetNs := shortNamespace(key)
 
 			phase := reconcileUntilTerminal(r, key, 30)
 			Expect(phase).To(Equal(corev1alpha1.PhaseReady))
@@ -907,7 +924,7 @@ var _ = Describe("EphemeralEnvironment shared component integration", func() {
 			fc.setReady(apiRelease, true)
 
 			key := makeEnv(testNS, envName, "tmpl")
-			targetNs := nsPrefix + envName
+			targetNs := shortNamespace(key)
 
 			phase := reconcileUntilTerminal(r, key, 20)
 			Expect(phase).To(Equal(corev1alpha1.PhaseReady))
@@ -944,7 +961,7 @@ var _ = Describe("EphemeralEnvironment shared component integration", func() {
 			})
 
 			key := makeEnv(testNS, envName, "tmpl")
-			targetNs := nsPrefix + envName
+			targetNs := shortNamespace(key)
 
 			phase := reconcileUntilTerminal(r, key, 5)
 			Expect(phase).To(Equal(corev1alpha1.PhaseDeploying))
@@ -1031,7 +1048,7 @@ var _ = Describe("EphemeralEnvironment shared component integration", func() {
 			fc.setReady(apiRelease, true)
 
 			key := makeEnv(testNS, envName, "tmpl")
-			targetNs := nsPrefix + envName
+			targetNs := shortNamespace(key)
 
 			phase := reconcileUntilTerminal(r, key, 30)
 			Expect(phase).To(Equal(corev1alpha1.PhaseReady))

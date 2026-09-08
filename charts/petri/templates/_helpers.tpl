@@ -8,10 +8,10 @@ helm.sh/chart: {{ .Chart.Name }}-{{ .Chart.Version }}
 
 {{/* Operator image, tag defaults to chart appVersion. */}}
 {{- define "petri.operatorImage" -}}
-{{ .Values.operator.image.repository }}:{{ .Values.operator.image.tag | default .Chart.AppVersion }}
+{{- .Values.operator.image.reference | default (printf "%s:%s" .Values.operator.image.repository (.Values.operator.image.tag | default .Chart.AppVersion)) -}}
 {{- end -}}
 
 {{/* Deployer image, tag defaults to chart appVersion. */}}
 {{- define "petri.deployerImage" -}}
-{{ .Values.deployer.image.repository }}:{{ .Values.deployer.image.tag | default .Chart.AppVersion }}
+{{- .Values.deployer.image.reference | default (printf "%s:%s" .Values.deployer.image.repository (.Values.deployer.image.tag | default .Chart.AppVersion)) -}}
 {{- end -}}

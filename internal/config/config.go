@@ -32,7 +32,7 @@ type Controllers struct {
 	DefaultDeployTimeout string `json:"defaultDeployTimeout,omitempty"`
 
 	// JobDeadline bounds deploy/provision Job runtime (ActiveDeadlineSeconds).
-	// Non-negative Go duration string; zero disables the deadline.
+	// Go duration string of at least one second; zero disables the deadline.
 	JobDeadline string `json:"jobDeadline,omitempty"`
 }
 
@@ -66,6 +66,9 @@ func Load(path string) (Config, error) {
 		}
 		if d < 0 {
 			return Config{}, fmt.Errorf("controllers.%s must be non-negative", field.name)
+		}
+		if field.name == "jobDeadline" && d > 0 && d < time.Second {
+			return Config{}, fmt.Errorf("controllers.jobDeadline must be zero or at least 1s")
 		}
 	}
 	if c.Controllers.MaxConcurrentReconciles < 0 {

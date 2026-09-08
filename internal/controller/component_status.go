@@ -53,14 +53,14 @@ func recordRuntimeFailure(env *v1alpha1.EphemeralEnvironment, name, reason strin
 	if cs := findComponent(env, name); cs != nil {
 		cs.DeployRetries++
 		cs.LastFailureReason = reason
-		cs.Phase = v1alpha1.PhaseSubmitting
+		cs.Phase = v1alpha1.PhasePending
 		cs.DeployingSince = nil
 		return cs.DeployRetries >= maxDeployRetries
 	}
 
 	env.Status.Components = append(env.Status.Components, v1alpha1.ComponentStatus{
 		Name:              name,
-		Phase:             v1alpha1.PhaseSubmitting,
+		Phase:             v1alpha1.PhasePending,
 		DeployRetries:     1,
 		LastFailureReason: reason,
 	})

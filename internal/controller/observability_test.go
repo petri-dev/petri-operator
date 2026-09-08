@@ -130,6 +130,7 @@ func TestReconcileRecordsRedeployment(t *testing.T) {
 	for _, phase := range []v1alpha1.Phase{v1alpha1.PhaseReady, v1alpha1.PhaseFailed} {
 		t.Run(string(phase), func(t *testing.T) {
 			env := envInPhase(phase)
+			env.UID = "redeploy-uid"
 			env.Generation = 2
 			env.Status.ObservedGeneration = 1
 			env.Status.DeployStartedAt = new(metav1.NewTime(time.Now().Add(-time.Hour)))
@@ -137,11 +138,17 @@ func TestReconcileRecordsRedeployment(t *testing.T) {
 			template := &v1alpha1.EnvironmentTemplate{ObjectMeta: metav1.ObjectMeta{Name: "empty", Namespace: env.Namespace}}
 			c := fake.NewClientBuilder().WithScheme(s).WithStatusSubresource(env).WithObjects(env, template).Build()
 			r := &EphemeralEnvironmentReconciler{Client: c, Scheme: s}
+			if err := r.allocateNamespace(t.Context(), env, 8); err != nil {
+				t.Fatal(err)
+			}
+			if err := c.Status().Update(t.Context(), env); err != nil {
+				t.Fatal(err)
+			}
 			ready := phaseTransitions.WithLabelValues(string(v1alpha1.PhaseReady))
 			deploying := phaseTransitions.WithLabelValues(string(v1alpha1.PhaseDeploying))
 			beforeReady, beforeDeploying := testutil.ToFloat64(ready), testutil.ToFloat64(deploying)
 			start := time.Now().Truncate(time.Second)
-			for range 2 {
+			for range 3 {
 				if _, err := r.reconcile(t.Context(), env); err != nil {
 					t.Fatal(err)
 				}

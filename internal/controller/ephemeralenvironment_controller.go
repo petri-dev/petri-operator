@@ -19,9 +19,9 @@ package controller
 import (
 	"cmp"
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/petri-dev/petri-operator/api/v1alpha1"
@@ -29,14 +29,13 @@ import (
 	"github.com/petri-dev/petri-operator/internal/graph"
 	"github.com/petri-dev/petri-operator/internal/helpers"
 	"github.com/petri-dev/petri-operator/internal/provisioner"
-	"github.com/petri-dev/petri-operator/internal/renderer"
+	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -60,7 +59,9 @@ const (
 	// observed at once, per level.
 	deployConcurrency = 4
 
-	nsPrefix = "petri-"
+	nsPrefix       = "petri-env-"
+	ownerUIDLabel  = "petri.run/environment-uid"
+	namespaceBound = "NamespaceBound"
 
 	deployerRoleBinding = "petri-deployer"
 )
@@ -111,6 +112,7 @@ type checker interface {
 // EphemeralEnvironmentReconciler reconciles a EphemeralEnvironment object.
 type EphemeralEnvironmentReconciler struct {
 	client.Client
+	APIReader   client.Reader
 	Scheme      *runtime.Scheme
 	Recorder    events.EventRecorder
 	Deployer    deployer.Deployer
@@ -174,6 +176,7 @@ func (r *EphemeralEnvironmentReconciler) reconcile(ctx context.Context, env *v1a
 	// write never double-counts a transition on the next attempt.
 	var passedPhases []v1alpha1.Phase
 
+	original := env.DeepCopy()
 	patcher := helpers.NewStatusPatcher(r.Client, env)
 	defer func() {
 		if err == nil && env.Status.Phase != v1alpha1.PhaseTerminating && deadline != nil {
@@ -186,12 +189,27 @@ func (r *EphemeralEnvironmentReconciler) reconcile(ctx context.Context, env *v1a
 			}
 		}
 		passedPhases = append(passedPhases, env.Status.Phase)
-		if patchErr := patcher.Patch(ctx, env); patchErr != nil {
+		var patchErr error
+		if original.Status.TargetNamespace != env.Status.TargetNamespace ||
+			meta.IsStatusConditionTrue(original.Status.Conditions, namespaceBound) != meta.IsStatusConditionTrue(env.Status.Conditions, namespaceBound) {
+			patchErr = r.Status().Patch(ctx, env, client.MergeFromWithOptions(original, client.MergeFromWithOptimisticLock{}))
+		} else {
+			patchErr = patcher.Patch(ctx, env)
+		}
+		if patchErr != nil {
 			err = errors.Join(err, patchErr)
 			return
 		}
 		recordPhaseTransitions(r.Recorder, env, oldPhase, passedPhases)
 	}()
+
+	if env.Status.TargetNamespace == "" {
+		return ctrl.Result{RequeueAfter: requeueImmediate}, r.allocateNamespace(ctx, env, 8)
+	}
+	targetNs, err := r.targetNamespace(env)
+	if err != nil {
+		return ctrl.Result{}, r.setFailed(env, "InvalidConfiguration", err.Error())
+	}
 
 	if env.Status.ObservedGeneration != env.Generation {
 		log.Info("spec changed, resetting environment state",
@@ -238,17 +256,22 @@ func (r *EphemeralEnvironmentReconciler) reconcile(ctx context.Context, env *v1a
 		return ctrl.Result{}, r.setFailed(env, "InvalidConfiguration", "invalid deployTimeout: "+err.Error())
 	}
 
-	targetNs, err := r.targetNamespace(env)
-	if err != nil {
-		return ctrl.Result{}, r.setFailed(env, "InvalidConfiguration", err.Error())
-	}
-
-	if err := r.createNamespace(ctx, targetNs); err != nil {
+	if err := r.createNamespace(ctx, env); err != nil {
 		if errors.Is(err, ErrNamespaceNotManaged) {
+			if !meta.IsStatusConditionTrue(env.Status.Conditions, namespaceBound) {
+				return ctrl.Result{RequeueAfter: requeueImmediate}, r.allocateNamespace(ctx, env, len(targetNs)-len(nsPrefix)+4)
+			}
 			return ctrl.Result{}, r.setFailed(env, "NamespaceNotManaged", err.Error())
 		}
 
 		return ctrl.Result{}, err
+	}
+	if !meta.IsStatusConditionTrue(env.Status.Conditions, namespaceBound) {
+		meta.SetStatusCondition(&env.Status.Conditions, metav1.Condition{
+			Type: namespaceBound, Status: metav1.ConditionTrue, Reason: "NamespaceOwned",
+			Message: "Target namespace is bound to this environment UID", ObservedGeneration: env.Generation,
+		})
+		return ctrl.Result{RequeueAfter: requeueImmediate}, nil
 	}
 
 	componentsByLevel, err := graph.BuildLevels(template.Spec.Components)
@@ -323,9 +346,28 @@ func (r *EphemeralEnvironmentReconciler) reconcileDelete(ctx context.Context, en
 
 	log := logf.FromContext(ctx)
 
+	if env.Status.TargetNamespace == "" {
+		return ctrl.Result{}, r.removeFinalizer(ctx, env)
+	}
 	targetNs, err := r.targetNamespace(env)
 	if err != nil {
-		log.Error(err, "invalid namespace during deletion, skipping cleanup")
+		return ctrl.Result{}, r.setFailed(env, "InvalidConfiguration", err.Error())
+	}
+	ns := new(corev1.Namespace)
+	if err := r.namespaceReader().Get(ctx, client.ObjectKey{Name: targetNs}, ns); err != nil {
+		if apierrors.IsNotFound(err) {
+			if meta.IsStatusConditionTrue(env.Status.Conditions, namespaceBound) {
+				return ctrl.Result{}, r.setFailed(env, "NamespaceNotManaged", "bound namespace is missing; admin cleanup of external allocations is required")
+			}
+			return ctrl.Result{}, r.removeFinalizer(ctx, env)
+		}
+		return ctrl.Result{}, err
+	}
+	if !ownsNamespace(env, ns) {
+		log.Info("namespace not owned by environment, skipping all cleanup", "namespace", targetNs)
+		if meta.IsStatusConditionTrue(env.Status.Conditions, namespaceBound) {
+			return ctrl.Result{}, r.setFailed(env, "NamespaceNotManaged", "bound namespace ownership changed; admin cleanup is required")
+		}
 		return ctrl.Result{}, r.removeFinalizer(ctx, env)
 	}
 
@@ -334,16 +376,15 @@ func (r *EphemeralEnvironmentReconciler) reconcileDelete(ctx context.Context, en
 		return ctrl.Result{}, err
 	}
 
-	if err := r.ensureDeployerRoleBinding(ctx, targetNs); err != nil && !apierrors.IsNotFound(err) {
-		return ctrl.Result{}, err
-	}
-
 	if env.Status.Phase != v1alpha1.PhaseTerminating {
 		log.Info("tearing down environment", "namespace", targetNs)
 	}
 	env.Status.Phase = v1alpha1.PhaseTerminating
 
-	if template != nil {
+	if template != nil && meta.IsStatusConditionTrue(env.Status.Conditions, namespaceBound) {
+		if err := r.ensureDeployerRoleBinding(ctx, targetNs); err != nil && !apierrors.IsNotFound(err) {
+			return ctrl.Result{}, err
+		}
 		done, res, err := r.undeployAll(ctx, env, targetNs, template.Spec.Components)
 		if err != nil {
 			return ctrl.Result{}, err
@@ -364,20 +405,10 @@ func (r *EphemeralEnvironmentReconciler) reconcileDelete(ctx context.Context, en
 		log.Info("deprovision shared complete")
 	}
 
-	ns := &corev1.Namespace{}
-	err = r.Get(ctx, client.ObjectKey{Name: targetNs}, ns)
-	if err != nil && !apierrors.IsNotFound(err) {
+	if err := client.IgnoreNotFound(r.Delete(ctx, ns, client.Preconditions{
+		UID: &ns.UID, ResourceVersion: &ns.ResourceVersion,
+	})); err != nil {
 		return ctrl.Result{}, err
-	}
-
-	if err == nil {
-		if _, managed := ns.Labels[managedLabel]; !managed {
-			log.Info("namespace not managed by Petri, skipping cleanup", "namespace", targetNs)
-			return ctrl.Result{}, r.removeFinalizer(ctx, env)
-		}
-		if err := r.deleteNamespace(ctx, targetNs); err != nil {
-			return ctrl.Result{}, err
-		}
 	}
 
 	return ctrl.Result{}, r.removeFinalizer(ctx, env)
@@ -408,10 +439,24 @@ func (r *EphemeralEnvironmentReconciler) deprovisionShared(ctx context.Context, 
 			return false, ctrl.Result{}, err
 		}
 
-		provName := "shared-" + sc.Name + "-provision-" + env.Name
+		provName := provisioner.ProvisionJobName(env.Name, component.Name) + "-credentials"
 		bindingName := env.Name + "-" + component.Name + "-binding"
+		provJob := new(batchv1.Job)
+		if err := r.namespaceReader().Get(ctx, client.ObjectKey{Name: provisioner.ProvisionJobName(env.Name, component.Name), Namespace: sharedNamespace}, provJob); err == nil {
+			if !provJob.DeletionTimestamp.IsZero() || deployer.TerminalPhase(provJob) == deployer.RunningJobPhase {
+				return false, ctrl.Result{RequeueAfter: requeueAfter}, nil
+			}
+		} else if !apierrors.IsNotFound(err) {
+			return false, ctrl.Result{}, err
+		}
 
 		if scp.Spec.Deprovision == nil {
+			if err := r.deleteJob(ctx, provisioner.ProvisionJobName(env.Name, component.Name), sharedNamespace); err != nil {
+				return false, ctrl.Result{}, err
+			}
+			if err := r.deleteSecret(ctx, provName, sharedNamespace); err != nil {
+				return false, ctrl.Result{}, err
+			}
 			if err := r.deleteSecret(ctx, bindingName, targetNs); err != nil {
 				return false, ctrl.Result{}, err
 			}
@@ -419,7 +464,11 @@ func (r *EphemeralEnvironmentReconciler) deprovisionShared(ctx context.Context, 
 		}
 
 		binding := new(corev1.Secret)
-		if err := r.Get(ctx, client.ObjectKey{Name: bindingName, Namespace: targetNs}, binding); err != nil && !apierrors.IsNotFound(err) {
+		if err := r.Get(ctx, client.ObjectKey{Name: bindingName, Namespace: targetNs}, binding); err != nil {
+			// already cleaned up, or this component was never provisioned.
+			if apierrors.IsNotFound(err) {
+				continue
+			}
 			return false, ctrl.Result{}, err
 		}
 		var genSecret string
@@ -431,17 +480,20 @@ func (r *EphemeralEnvironmentReconciler) deprovisionShared(ctx context.Context, 
 			return false, ctrl.Result{}, err
 		}
 
-		state, err := r.Provisioner.ObserveDeprovision(ctx, provisioner.ProvisionOptions{
-			EnvName:       env.Name,
-			ComponentName: component.Name,
-			SharedName:    sc.Name,
-		})
+		opts, err := renderProvisionOptions(env, component, sc, scp.Spec.Deprovision, genSecret, nil)
+		if err != nil {
+			return false, ctrl.Result{}, err
+		}
+		state, err := r.Provisioner.ObserveDeprovision(ctx, opts)
 		if err != nil {
 			return false, ctrl.Result{}, err
 		}
 
 		switch state.Phase {
 		case deployer.SucceededJobPhase:
+			if err := r.deleteJob(ctx, provisioner.ProvisionJobName(env.Name, component.Name), sharedNamespace); err != nil {
+				return false, ctrl.Result{}, err
+			}
 			deprovJobName := provisioner.DeprovisionJobName(env.Name, component.Name)
 			if err := r.deleteJob(ctx, deprovJobName, sharedNamespace); err != nil {
 				return false, ctrl.Result{}, err
@@ -454,37 +506,6 @@ func (r *EphemeralEnvironmentReconciler) deprovisionShared(ctx context.Context, 
 			}
 
 		case deployer.PendingJobPhase, deployer.FailedJobPhase:
-			if err := scp.Spec.Deprovision.Validate(); err != nil {
-				return false, ctrl.Result{}, fmt.Errorf("invalid deprovision script: %w", err)
-			}
-			script := *scp.Spec.Deprovision
-			script.Command = append([]string(nil), scp.Spec.Deprovision.Command...)
-			deprovVars := renderer.Vars{Env: renderer.EnvVarsFor(env.Name, genSecret)}
-			if script.Script != "" {
-				rendered, err := renderer.Render(script.Script, deprovVars)
-				if err != nil {
-					return false, ctrl.Result{}, fmt.Errorf("render deprovision script: %w", err)
-				}
-				script.Script = rendered
-			}
-			for i, c := range script.Command {
-				rendered, err := renderer.Render(c, deprovVars)
-				if err != nil {
-					return false, ctrl.Result{}, fmt.Errorf("render deprovision command[%d]: %w", i, err)
-				}
-				script.Command[i] = rendered
-			}
-
-			if err := r.Provisioner.SubmitDeprovision(ctx, provisioner.ProvisionOptions{
-				EnvName:              env.Name,
-				ComponentName:        component.Name,
-				SharedName:           sc.Name,
-				Script:               script,
-				ProvisionerSecretRef: provName,
-			}); err != nil {
-				return false, ctrl.Result{}, err
-			}
-
 			if state.Phase == deployer.FailedJobPhase {
 				if recordRuntimeFailure(env, component.Name, "deprovision: "+state.Reason) {
 					log.Error(errors.New(state.Reason), "deprovision exhausted retries, forcing cleanup", "component", component.Name)
@@ -496,6 +517,9 @@ func (r *EphemeralEnvironmentReconciler) deprovisionShared(ctx context.Context, 
 					}
 					continue
 				}
+			}
+			if err := r.Provisioner.SubmitDeprovision(ctx, opts); err != nil {
+				return false, ctrl.Result{}, err
 			}
 			return false, ctrl.Result{RequeueAfter: requeueAfter}, nil
 
@@ -543,12 +567,16 @@ func (r *EphemeralEnvironmentReconciler) ensureDeployerRoleBinding(ctx context.C
 	return r.Create(ctx, rb)
 }
 
-func (r *EphemeralEnvironmentReconciler) createNamespace(ctx context.Context, targetNs string) error {
+func (r *EphemeralEnvironmentReconciler) createNamespace(ctx context.Context, env *v1alpha1.EphemeralEnvironment) error {
+	targetNs := env.Status.TargetNamespace
 	ns := &corev1.Namespace{}
-	err := r.Get(ctx, client.ObjectKey{Name: targetNs}, ns)
+	err := r.namespaceReader().Get(ctx, client.ObjectKey{Name: targetNs}, ns)
 	if err == nil {
-		if _, managed := ns.Labels[managedLabel]; !managed {
+		if !ownsNamespace(env, ns) {
 			return fmt.Errorf("%w: %q", ErrNamespaceNotManaged, targetNs)
+		}
+		if !ns.DeletionTimestamp.IsZero() {
+			return fmt.Errorf("namespace %q is terminating", targetNs)
 		}
 		return r.ensureDeployerRoleBinding(ctx, targetNs)
 	}
@@ -556,16 +584,32 @@ func (r *EphemeralEnvironmentReconciler) createNamespace(ctx context.Context, ta
 		return err
 	}
 
+	if meta.IsStatusConditionTrue(env.Status.Conditions, namespaceBound) {
+		return fmt.Errorf("bound namespace %q disappeared; refusing to recreate it and lose cleanup evidence", targetNs)
+	}
 	ns = &corev1.Namespace{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: targetNs,
 			Labels: map[string]string{
-				managedLabel: "true",
+				managedLabel:  "true",
+				ownerUIDLabel: string(env.UID),
 			},
 		},
 	}
 
 	err = r.Create(ctx, ns)
+	if apierrors.IsAlreadyExists(err) {
+		if err := r.namespaceReader().Get(ctx, client.ObjectKey{Name: targetNs}, ns); err != nil {
+			return err
+		}
+		if !ownsNamespace(env, ns) {
+			return fmt.Errorf("%w: %q", ErrNamespaceNotManaged, targetNs)
+		}
+		if !ns.DeletionTimestamp.IsZero() {
+			return fmt.Errorf("namespace %q is terminating", targetNs)
+		}
+		err = nil
+	}
 	if err != nil {
 		return fmt.Errorf("failed to create a namespace: %w", err)
 	}
@@ -582,18 +626,46 @@ func (r *EphemeralEnvironmentReconciler) getEnvironmentTemplate(ctx context.Cont
 }
 
 func (r *EphemeralEnvironmentReconciler) targetNamespace(env *v1alpha1.EphemeralEnvironment) (string, error) {
-	ns := nsPrefix + env.Name
-	if errs := validation.IsDNS1123Label(ns); errs != nil {
-		return "", fmt.Errorf("invalid namespace %q: %s", ns, strings.Join(errs, ", "))
+	digest := fmt.Sprintf("%x", sha256.Sum256([]byte(env.UID)))
+	for n := 8; n <= 52; n += 4 {
+		if env.UID != "" && env.Status.TargetNamespace == nsPrefix+digest[:n] {
+			return env.Status.TargetNamespace, nil
+		}
 	}
-
-	return ns, nil
+	return "", fmt.Errorf("invalid targetNamespace %q for environment UID %q", env.Status.TargetNamespace, env.UID)
 }
 
-func (r *EphemeralEnvironmentReconciler) deleteNamespace(ctx context.Context, name string) error {
-	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: name}}
-	err := r.Delete(ctx, ns)
-	return client.IgnoreNotFound(err)
+func (r *EphemeralEnvironmentReconciler) namespaceReader() client.Reader {
+	if r.APIReader != nil {
+		return r.APIReader
+	}
+	return r.Client
+}
+
+func ownsNamespace(env *v1alpha1.EphemeralEnvironment, ns *corev1.Namespace) bool {
+	return env.UID != "" && ns.Labels[managedLabel] == "true" && ns.Labels[ownerUIDLabel] == string(env.UID)
+}
+
+func (r *EphemeralEnvironmentReconciler) allocateNamespace(ctx context.Context, env *v1alpha1.EphemeralEnvironment, start int) error {
+	if env.UID == "" {
+		return errors.New("cannot allocate namespace without environment UID")
+	}
+	digest := fmt.Sprintf("%x", sha256.Sum256([]byte(env.UID)))
+	// magic numbers explanation: check if we exceed the length that was set by DNS-1035.
+	for n := start; n <= 52; n += 4 {
+		name := nsPrefix + digest[:n]
+		ns := new(corev1.Namespace)
+		err := r.Get(ctx, client.ObjectKey{Name: name}, ns)
+		if apierrors.IsNotFound(err) || (err == nil && ownsNamespace(env, ns)) {
+			env.Status.TargetNamespace = name
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+	}
+
+	return errors.New("all deterministic namespace prefixes through 52 hex characters are occupied")
 }
 
 func (r *EphemeralEnvironmentReconciler) removeFinalizer(ctx context.Context, env *v1alpha1.EphemeralEnvironment) error {
@@ -603,6 +675,7 @@ func (r *EphemeralEnvironmentReconciler) removeFinalizer(ctx context.Context, en
 }
 
 func (r *EphemeralEnvironmentReconciler) SetupWithManager(mgr ctrl.Manager, rl RateLimitOptions) error {
+	r.APIReader = mgr.GetAPIReader()
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&v1alpha1.EphemeralEnvironment{}).
 		Named("ephemeralenvironment").
