@@ -116,6 +116,12 @@ spec:
               consumers:
                 type: integer
               phase:
+                enum:
+                - Pending
+                - Submitting
+                - Deploying
+                - Ready
+                - Failed
                 type: string
               ready:
                 type: boolean

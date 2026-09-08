@@ -80,7 +80,7 @@ func TestNamespaceAllocation(t *testing.T) {
 	g.Expect(r.Get(t.Context(), client.ObjectKey{Name: env.Status.TargetNamespace}, ns)).To(Succeed())
 	g.Expect(ns.Labels[ownerUIDLabel]).To(Equal(string(env.UID)))
 	namespaceStep(t, r, env)
-	g.Expect(env.Status.Phase).To(Equal(v1alpha1.PhaseReady))
+	g.Expect(env.Status.Phase).To(Equal(v1alpha1.EnvironmentPhaseReady))
 	// A generation reset must not permit moving an already-bound assignment.
 	ns.Labels[ownerUIDLabel] = "replacement-owner"
 	g.Expect(r.Update(t.Context(), ns)).To(Succeed())
@@ -267,7 +267,7 @@ func TestNamespaceInvalidAssignment(t *testing.T) {
 			g := NewWithT(t)
 			r, env := namespaceFixture(t)
 			env.Status.TargetNamespace = "petri-" + env.Name
-			env.Status.Phase = v1alpha1.PhaseReady
+			env.Status.Phase = v1alpha1.EnvironmentPhaseReady
 			g.Expect(r.Status().Update(t.Context(), env)).To(Succeed())
 			env.CreationTimestamp = metav1.NewTime(time.Now().Add(-time.Hour))
 			if mode == "ttl" {
@@ -298,7 +298,7 @@ func TestNamespaceInvalidAssignment(t *testing.T) {
 
 func TestNamespaceAllocationWithPhase(t *testing.T) {
 	t.Parallel()
-	for _, phase := range []v1alpha1.Phase{"", v1alpha1.PhasePending, v1alpha1.PhaseReady, v1alpha1.PhaseFailed} {
+	for _, phase := range []v1alpha1.EnvironmentPhase{"", v1alpha1.EnvironmentPhasePending, v1alpha1.EnvironmentPhaseReady, v1alpha1.EnvironmentPhaseFailed} {
 		t.Run(string(phase), func(t *testing.T) {
 			t.Parallel()
 			g := NewWithT(t)

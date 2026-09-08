@@ -30,7 +30,7 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 )
 
-func (r *EphemeralEnvironmentReconciler) processLevel(ctx context.Context, env *v1alpha1.EphemeralEnvironment, targetNs string, level []v1alpha1.ComponentSpec, phaseByName map[string]v1alpha1.Phase, deployTimeout time.Duration) (ctrl.Result, error) {
+func (r *EphemeralEnvironmentReconciler) processLevel(ctx context.Context, env *v1alpha1.EphemeralEnvironment, targetNs string, level []v1alpha1.ComponentSpec, phaseByName map[string]v1alpha1.ComponentPhase, deployTimeout time.Duration) (ctrl.Result, error) {
 	needDeploy, submitting, needCheck := partitionLevel(level, phaseByName)
 
 	logf.FromContext(ctx).V(1).Info("processing frontier",
@@ -49,14 +49,14 @@ func (r *EphemeralEnvironmentReconciler) processLevel(ctx context.Context, env *
 	return r.checkReadiness(ctx, env, targetNs, needCheck, deployTimeout)
 }
 
-func partitionLevel(level []v1alpha1.ComponentSpec, phaseByName map[string]v1alpha1.Phase) (needDeploy, submitting, needCheck []v1alpha1.ComponentSpec) {
+func partitionLevel(level []v1alpha1.ComponentSpec, phaseByName map[string]v1alpha1.ComponentPhase) (needDeploy, submitting, needCheck []v1alpha1.ComponentSpec) {
 	for _, component := range level {
 		switch phaseByName[component.Name] {
-		case v1alpha1.PhaseReady, v1alpha1.PhaseFailed:
+		case v1alpha1.ComponentPhaseReady, v1alpha1.ComponentPhaseFailed:
 			continue
-		case v1alpha1.PhaseSubmitting:
+		case v1alpha1.ComponentPhaseSubmitting:
 			submitting = append(submitting, component)
-		case v1alpha1.PhaseDeploying:
+		case v1alpha1.ComponentPhaseDeploying:
 			needCheck = append(needCheck, component)
 		default:
 			needDeploy = append(needDeploy, component)
@@ -78,9 +78,12 @@ func (r *EphemeralEnvironmentReconciler) submitDeploys(ctx context.Context, env 
 		return ctrl.Result{}, err
 	}
 
-	submitErrs := r.eachComponent(ctx, needDeploy, func(gctx context.Context, _ int, c v1alpha1.ComponentSpec) error {
+	sharedPhases := make([]v1alpha1.ComponentPhase, len(needDeploy))
+	submitErrs := r.eachComponent(ctx, needDeploy, func(gctx context.Context, i int, c v1alpha1.ComponentSpec) error {
 		if c.SharedComponentRef != "" {
-			return r.submitShared(gctx, env, targetNs, c)
+			phase, err := r.submitShared(gctx, env, targetNs, c)
+			sharedPhases[i] = phase
+			return err
 		}
 		rendered, err := renderConsumerValues(env, c, components)
 		if err != nil {
@@ -88,6 +91,16 @@ func (r *EphemeralEnvironmentReconciler) submitDeploys(ctx context.Context, env 
 		}
 		return r.Deployer.Submit(gctx, r.deployOpts(env, targetNs, rendered))
 	})
+
+	for i, component := range needDeploy {
+		if component.SharedComponentRef != "" && submitErrs[i] == nil {
+			setComponentPhase(env, component.Name, sharedPhases[i])
+			setComponentShared(env, component.Name)
+			if sharedPhases[i] == v1alpha1.ComponentPhaseReady {
+				resetComponentFailure(env, component.Name)
+			}
+		}
+	}
 
 	exhausted := false
 	stillRetrying := false
@@ -100,11 +113,11 @@ func (r *EphemeralEnvironmentReconciler) submitDeploys(ctx context.Context, env 
 			case errors.Is(err, errSharedNotReady):
 				notReady = true
 			case errors.Is(err, errAtCapacity):
-				setComponentPhase(env, component.Name, v1alpha1.PhaseFailed)
+				setComponentPhase(env, component.Name, v1alpha1.ComponentPhaseFailed)
 				return ctrl.Result{}, r.setFailed(env, "SharedComponentAtCapacity", component.Name)
 			default:
 				if recordRuntimeFailure(env, component.Name, err.Error()) {
-					setComponentPhase(env, component.Name, v1alpha1.PhaseFailed)
+					setComponentPhase(env, component.Name, v1alpha1.ComponentPhaseFailed)
 					exhausted = true
 				} else {
 					stillRetrying = true
@@ -114,7 +127,7 @@ func (r *EphemeralEnvironmentReconciler) submitDeploys(ctx context.Context, env 
 		}
 		if err == nil {
 			// deploy Job submitted; wait for it via Observe on the next pass
-			setComponentPhase(env, component.Name, v1alpha1.PhaseSubmitting)
+			setComponentPhase(env, component.Name, v1alpha1.ComponentPhaseSubmitting)
 			continue
 		}
 
@@ -125,7 +138,7 @@ func (r *EphemeralEnvironmentReconciler) submitDeploys(ctx context.Context, env 
 
 		if recordRuntimeFailure(env, component.Name, submitErrs[i].Error()) {
 			log.Error(submitErrs[i], "component deploy failed permanently", "component", component.Name)
-			setComponentPhase(env, component.Name, v1alpha1.PhaseFailed)
+			setComponentPhase(env, component.Name, v1alpha1.ComponentPhaseFailed)
 			exhausted = true
 		} else {
 			log.Info("component deploy failed, will retry", "component", component.Name, "error", submitErrs[i].Error())
@@ -186,14 +199,14 @@ func (r *EphemeralEnvironmentReconciler) observeDeploys(ctx context.Context, env
 
 		switch st.Phase {
 		case deployer.PendingJobPhase:
-			setComponentPhase(env, component.Name, v1alpha1.PhasePending)
+			setComponentPhase(env, component.Name, v1alpha1.ComponentPhasePending)
 			stillRunning = true
 		case deployer.SucceededJobPhase:
-			setComponentPhase(env, component.Name, v1alpha1.PhaseDeploying)
+			setComponentPhase(env, component.Name, v1alpha1.ComponentPhaseDeploying)
 			setComponentDeployingSince(env, component.Name, metav1.Now())
 		case deployer.FailedJobPhase:
 			if recordRuntimeFailure(env, component.Name, st.Reason) {
-				setComponentPhase(env, component.Name, v1alpha1.PhaseFailed)
+				setComponentPhase(env, component.Name, v1alpha1.ComponentPhaseFailed)
 				return ctrl.Result{}, true, r.setFailed(env, "DeployFailed", component.Name+": "+st.Reason)
 			}
 
@@ -223,7 +236,7 @@ func (r *EphemeralEnvironmentReconciler) checkReadiness(ctx context.Context, env
 	for _, component := range needCheck {
 		if since := componentDeployingSince(env, component.Name); since != nil && time.Since(since.Time) > deployTimeout {
 			if recordRuntimeFailure(env, component.Name, "readiness timeout after "+deployTimeout.String()) {
-				setComponentPhase(env, component.Name, v1alpha1.PhaseFailed)
+				setComponentPhase(env, component.Name, v1alpha1.ComponentPhaseFailed)
 				return ctrl.Result{}, r.setFailed(env, "ReadinessTimeout",
 					fmt.Sprintf("%s did not become ready within %s (retries exhausted)", component.Name, deployTimeout))
 			}
@@ -238,7 +251,7 @@ func (r *EphemeralEnvironmentReconciler) checkReadiness(ctx context.Context, env
 		}
 		if ready {
 			log.Info("component ready", "component", component.Name)
-			setComponentPhase(env, component.Name, v1alpha1.PhaseReady)
+			setComponentPhase(env, component.Name, v1alpha1.ComponentPhaseReady)
 			resetComponentFailure(env, component.Name)
 		} else {
 			log.Info("component not ready", "component", component.Name, "reason", reason)

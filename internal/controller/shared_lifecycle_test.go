@@ -80,7 +80,13 @@ var _ = Describe("Shared Job lifecycle", func() {
 		env := &v1alpha1.EphemeralEnvironment{ObjectMeta: metav1.ObjectMeta{Name: ns.Name, Namespace: ns.Name, UID: types.UID(ns.Name)}, Status: v1alpha1.EphemeralEnvironmentStatus{TargetNamespace: ns.Name}}
 		component := v1alpha1.ComponentSpec{Name: "db", SharedComponentRef: sc.Name}
 		r := &EphemeralEnvironmentReconciler{Client: k8sClient, Provisioner: &provisioner.JobProvisioner{Client: k8sClient, Reader: k8sClient}}
-		submit := func() { Expect(r.submitShared(ctx, env, ns.Name, component)).To(Succeed()) }
+		submit := func() {
+			phase, err := r.submitShared(ctx, env, ns.Name, component)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(phase).To(Equal(v1alpha1.ComponentPhaseSubmitting))
+			setComponentPhase(env, component.Name, phase)
+			setComponentShared(env, component.Name)
+		}
 		observe := func() bool {
 			done, err := r.observeShared(ctx, env, component)
 			Expect(err).NotTo(HaveOccurred())
@@ -94,7 +100,7 @@ var _ = Describe("Shared Job lifecycle", func() {
 		uid := job.UID
 		Expect(observe()).To(BeFalse())
 		Expect(findComponent(env, component.Name).DeployRetries).To(Equal(int32(1)))
-		Expect(findComponent(env, component.Name).Phase).To(Equal(v1alpha1.PhasePending))
+		Expect(findComponent(env, component.Name).Phase).To(Equal(v1alpha1.ComponentPhasePending))
 		submit()
 		Expect(k8sClient.Get(ctx, key, job)).To(Succeed())
 		for range 3 {
@@ -110,7 +116,9 @@ var _ = Describe("Shared Job lifecycle", func() {
 		finishJob(ctx, job, batchv1.JobComplete)
 		uid = job.UID
 		sibling := v1alpha1.ComponentSpec{Name: "db2", SharedComponentRef: sc.Name}
-		Expect(r.submitShared(ctx, env, ns.Name, sibling)).To(Succeed())
+		phase, err := r.submitShared(ctx, env, ns.Name, sibling)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(phase).To(Equal(v1alpha1.ComponentPhaseSubmitting))
 		Expect(observe()).To(BeTrue())
 		Expect(k8sClient.Get(ctx, client.ObjectKey{Name: provisioner.ProvisionJobName(env.Name, sibling.Name) + "-credentials", Namespace: sharedNamespace}, new(corev1.Secret))).To(Succeed())
 		env.Spec.Values = map[string]string{"replicaCount": "2"}
@@ -124,7 +132,7 @@ var _ = Describe("Shared Job lifecycle", func() {
 		Expect(k8sClient.Update(ctx, scp)).To(Succeed())
 		submit()
 		Expect(observe()).To(BeFalse())
-		Expect(findComponent(env, component.Name).Phase).To(Equal(v1alpha1.PhasePending))
+		Expect(findComponent(env, component.Name).Phase).To(Equal(v1alpha1.ComponentPhasePending))
 	})
 })
 

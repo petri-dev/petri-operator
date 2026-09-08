@@ -133,14 +133,14 @@ func (r *EphemeralEnvironmentReconciler) registerConsumer(ctx context.Context, e
 	return ctx.Err()
 }
 
-func (r *EphemeralEnvironmentReconciler) submitShared(ctx context.Context, env *v1alpha1.EphemeralEnvironment, targetNs string, component v1alpha1.ComponentSpec) error {
+func (r *EphemeralEnvironmentReconciler) submitShared(ctx context.Context, env *v1alpha1.EphemeralEnvironment, targetNs string, component v1alpha1.ComponentSpec) (v1alpha1.ComponentPhase, error) {
 	sc := &v1alpha1.SharedComponent{ObjectMeta: metav1.ObjectMeta{Name: component.SharedComponentRef, Namespace: env.Namespace}}
 	if err := r.registerConsumer(ctx, env, targetNs, sc); err != nil {
-		return err
+		return "", err
 	}
 	scp := new(v1alpha1.SharedComponentProvider)
 	if err := r.Get(ctx, client.ObjectKey{Name: sc.Spec.Provider, Namespace: env.Namespace}, scp); err != nil {
-		return fmt.Errorf("get provider %q: %w", sc.Spec.Provider, err)
+		return "", fmt.Errorf("get provider %q: %w", sc.Spec.Provider, err)
 	}
 
 	bindingName := env.Name + "-" + component.Name + "-binding"
@@ -148,14 +148,14 @@ func (r *EphemeralEnvironmentReconciler) submitShared(ctx context.Context, env *
 	binding := new(corev1.Secret)
 	err := r.Get(ctx, client.ObjectKey{Name: bindingName, Namespace: targetNs}, binding)
 	if err != nil && !apierrors.IsNotFound(err) {
-		return fmt.Errorf("get binding secret: %w", err)
+		return "", fmt.Errorf("get binding secret: %w", err)
 	}
 
 	instance := map[string]string{}
 	if scp.Spec.InstanceSecret != nil {
 		is := new(corev1.Secret)
 		if err := r.Get(ctx, client.ObjectKey{Name: scp.Spec.InstanceSecret.Name, Namespace: sharedNamespace}, is); err != nil {
-			return err
+			return "", err
 		}
 		for k, v := range is.Data {
 			instance[k] = string(v)
@@ -168,7 +168,7 @@ func (r *EphemeralEnvironmentReconciler) submitShared(ctx context.Context, env *
 	} else {
 		genSecret, err = secretgen.Random(24, "alphanumeric")
 		if err != nil {
-			return err
+			return "", err
 		}
 
 		vars := renderer.Vars{Env: renderer.EnvVarsFor(env.Name, genSecret), Instance: instance}
@@ -176,7 +176,7 @@ func (r *EphemeralEnvironmentReconciler) submitShared(ctx context.Context, env *
 		if scp.Spec.Binding != nil {
 			rendered, err := renderer.RenderMap(scp.Spec.Binding.SecretKeys, vars)
 			if err != nil {
-				return fmt.Errorf("render binding keys: %w", err)
+				return "", fmt.Errorf("render binding keys: %w", err)
 			}
 			for k, v := range rendered {
 				data[k] = []byte(v)
@@ -187,36 +187,32 @@ func (r *EphemeralEnvironmentReconciler) submitShared(ctx context.Context, env *
 			ObjectMeta: metav1.ObjectMeta{Name: bindingName, Namespace: targetNs},
 			Data:       data,
 		}); err != nil {
-			return fmt.Errorf("create binding secret: %w", err)
+			return "", fmt.Errorf("create binding secret: %w", err)
 		}
 	}
 
 	if scp.Spec.Provision == nil {
-		setComponentPhase(env, component.Name, v1alpha1.PhaseReady)
-		setComponentShared(env, component.Name)
-		return nil
+		return v1alpha1.ComponentPhaseReady, nil
 	}
 
 	if err := scp.Spec.Provision.Validate(); err != nil {
-		return fmt.Errorf("invalid provision script: %w", err)
+		return "", fmt.Errorf("invalid provision script: %w", err)
 	}
 
 	provName := provisioner.ProvisionJobName(env.Name, component.Name) + "-credentials"
 	if err := r.ensureProvisionSecret(ctx, provName, env.Name, genSecret); err != nil {
-		return err
+		return "", err
 	}
 
 	opts, err := renderProvisionOptions(env, component, sc, scp.Spec.Provision, genSecret, instance)
 	if err != nil {
-		return err
+		return "", err
 	}
 	if err := r.Provisioner.SubmitProvision(ctx, opts); err != nil {
-		return err
+		return "", err
 	}
 
-	setComponentPhase(env, component.Name, v1alpha1.PhaseSubmitting)
-	setComponentShared(env, component.Name)
-	return nil
+	return v1alpha1.ComponentPhaseSubmitting, nil
 }
 
 func renderProvisionOptions(env *v1alpha1.EphemeralEnvironment, component v1alpha1.ComponentSpec, sc *v1alpha1.SharedComponent, script *v1alpha1.JobScript, genSecret string, instance map[string]string) (provisioner.ProvisionOptions, error) {
@@ -384,7 +380,7 @@ func (r *EphemeralEnvironmentReconciler) observeShared(ctx context.Context, env 
 	}
 
 	if scp.Spec.Provision == nil {
-		setComponentPhase(env, component.Name, v1alpha1.PhasePending)
+		setComponentPhase(env, component.Name, v1alpha1.ComponentPhasePending)
 		return false, nil
 	}
 
@@ -416,19 +412,19 @@ func (r *EphemeralEnvironmentReconciler) observeShared(ctx context.Context, env 
 
 	switch state.Phase {
 	case deployer.PendingJobPhase:
-		setComponentPhase(env, component.Name, v1alpha1.PhasePending)
+		setComponentPhase(env, component.Name, v1alpha1.ComponentPhasePending)
 		return false, nil
 	case deployer.SucceededJobPhase:
 		if err := r.deleteSecret(ctx, opts.ProvisionerSecretRef, sharedNamespace); err != nil {
 			return false, err
 		}
-		setComponentPhase(env, component.Name, v1alpha1.PhaseReady)
+		setComponentPhase(env, component.Name, v1alpha1.ComponentPhaseReady)
 		resetComponentFailure(env, component.Name)
 		return true, nil
 
 	case deployer.FailedJobPhase:
 		if recordRuntimeFailure(env, component.Name, "provision: "+state.Reason) {
-			setComponentPhase(env, component.Name, v1alpha1.PhaseFailed)
+			setComponentPhase(env, component.Name, v1alpha1.ComponentPhaseFailed)
 			return false, r.setFailed(env, "ProvisionFailed", component.Name+": "+state.Reason)
 		}
 		return false, nil

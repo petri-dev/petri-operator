@@ -29,22 +29,22 @@ func init() {
 	metrics.Registry.MustRegister(phaseTransitions, deployDuration, deployFailures)
 }
 
-func eventReason(p v1alpha1.Phase) (reason, eventType string) {
+func eventReason(p v1alpha1.EnvironmentPhase) (reason, eventType string) {
 	switch p {
-	case v1alpha1.PhaseReady:
+	case v1alpha1.EnvironmentPhaseReady:
 		return "Ready", "Normal"
-	case v1alpha1.PhaseFailed:
+	case v1alpha1.EnvironmentPhaseFailed:
 		return "Failed", "Warning"
-	case v1alpha1.PhaseDeploying:
+	case v1alpha1.EnvironmentPhaseDeploying:
 		return "Deploying", "Normal"
-	case v1alpha1.PhaseTerminating:
+	case v1alpha1.EnvironmentPhaseTerminating:
 		return "Terminating", "Normal"
 	default:
 		return string(p), "Normal"
 	}
 }
 
-func recordPhaseTransition(rec events.EventRecorder, env *v1alpha1.EphemeralEnvironment, oldPhase v1alpha1.Phase) {
+func recordPhaseTransition(rec events.EventRecorder, env *v1alpha1.EphemeralEnvironment, oldPhase v1alpha1.EnvironmentPhase) {
 	newPhase := env.Status.Phase
 	if newPhase == oldPhase || newPhase == "" {
 		return
@@ -58,16 +58,16 @@ func recordPhaseTransition(rec events.EventRecorder, env *v1alpha1.EphemeralEnvi
 	}
 
 	switch newPhase {
-	case v1alpha1.PhaseFailed:
+	case v1alpha1.EnvironmentPhaseFailed:
 		deployFailures.Inc()
-	case v1alpha1.PhaseReady:
+	case v1alpha1.EnvironmentPhaseReady:
 		if env.Status.DeployStartedAt != nil {
 			deployDuration.Observe(time.Since(env.Status.DeployStartedAt.Time).Seconds())
 		}
 	}
 }
 
-func recordPhaseTransitions(rec events.EventRecorder, env *v1alpha1.EphemeralEnvironment, oldPhase v1alpha1.Phase, passed []v1alpha1.Phase) {
+func recordPhaseTransitions(rec events.EventRecorder, env *v1alpha1.EphemeralEnvironment, oldPhase v1alpha1.EnvironmentPhase, passed []v1alpha1.EnvironmentPhase) {
 	prev := oldPhase
 	for _, p := range passed {
 		env.Status.Phase = p

@@ -174,12 +174,12 @@ func (r *EphemeralEnvironmentReconciler) reconcile(ctx context.Context, env *v1a
 	// Phases this reconcile moves through, in order. We record metrics/Events
 	// for them only after the status PATCH succeeds (see below), so a failed
 	// write never double-counts a transition on the next attempt.
-	var passedPhases []v1alpha1.Phase
+	var passedPhases []v1alpha1.EnvironmentPhase
 
 	original := env.DeepCopy()
 	patcher := helpers.NewStatusPatcher(r.Client, env)
 	defer func() {
-		if err == nil && env.Status.Phase != v1alpha1.PhaseTerminating && deadline != nil {
+		if err == nil && env.Status.Phase != v1alpha1.EnvironmentPhaseTerminating && deadline != nil {
 			remaining := time.Until(*deadline)
 			if remaining <= 0 {
 				remaining = time.Nanosecond
@@ -246,7 +246,7 @@ func (r *EphemeralEnvironmentReconciler) reconcile(ctx context.Context, env *v1a
 	}
 
 	if deadline != nil && !now.Before(*deadline) {
-		env.Status.Phase = v1alpha1.PhaseTerminating
+		env.Status.Phase = v1alpha1.EnvironmentPhaseTerminating
 		deadline = nil
 		return ctrl.Result{}, client.IgnoreNotFound(r.Delete(ctx, env))
 	}
@@ -286,11 +286,11 @@ func (r *EphemeralEnvironmentReconciler) reconcile(ctx context.Context, env *v1a
 		}
 	}
 
-	if env.Status.Phase == v1alpha1.PhaseFailed {
+	if env.Status.Phase == v1alpha1.EnvironmentPhaseFailed {
 		return ctrl.Result{}, nil
 	}
 
-	phaseByName := make(map[string]v1alpha1.Phase, len(env.Status.Components))
+	phaseByName := make(map[string]v1alpha1.ComponentPhase, len(env.Status.Components))
 	for _, cs := range env.Status.Components {
 		phaseByName[cs.Name] = cs.Phase
 	}
@@ -305,15 +305,15 @@ func (r *EphemeralEnvironmentReconciler) reconcile(ctx context.Context, env *v1a
 
 	// enter Deploying if there is pending work, or the env isnt Ready yet. We check components directly rather than trusting the phase: a new component
 	// in the template doesnt bump the env generation, so a Ready env can gain work with no signal on the env itself.
-	if env.Status.Phase != v1alpha1.PhaseDeploying &&
-		(firstPending >= 0 || env.Status.Phase != v1alpha1.PhaseReady) {
+	if env.Status.Phase != v1alpha1.EnvironmentPhaseDeploying &&
+		(firstPending >= 0 || env.Status.Phase != v1alpha1.EnvironmentPhaseReady) {
 		// we only get here when starting (or restarting) a deploy, so record when it began.
 		env.Status.DeployStartedAt = new(metav1.Now())
-		env.Status.Phase = v1alpha1.PhaseDeploying
+		env.Status.Phase = v1alpha1.EnvironmentPhaseDeploying
 		// Remember the intermediate Deploying; the deferred block replays it
 		// after the PATCH succeeds. The env may settle back to Ready below in
 		// the same reconcile, but this keeps the Deploying leg visible.
-		passedPhases = append(passedPhases, v1alpha1.PhaseDeploying)
+		passedPhases = append(passedPhases, v1alpha1.EnvironmentPhaseDeploying)
 	}
 
 	if firstPending >= 0 {
@@ -323,10 +323,10 @@ func (r *EphemeralEnvironmentReconciler) reconcile(ctx context.Context, env *v1a
 	}
 
 	// TODO also update the status.URL field with domain
-	if env.Status.Phase != v1alpha1.PhaseReady {
+	if env.Status.Phase != v1alpha1.EnvironmentPhaseReady {
 		log.Info("environment ready", "components", len(env.Status.Components))
 	}
-	env.Status.Phase = v1alpha1.PhaseReady
+	env.Status.Phase = v1alpha1.EnvironmentPhaseReady
 	return ctrl.Result{}, nil
 }
 
@@ -376,10 +376,10 @@ func (r *EphemeralEnvironmentReconciler) reconcileDelete(ctx context.Context, en
 		return ctrl.Result{}, err
 	}
 
-	if env.Status.Phase != v1alpha1.PhaseTerminating {
+	if env.Status.Phase != v1alpha1.EnvironmentPhaseTerminating {
 		log.Info("tearing down environment", "namespace", targetNs)
 	}
-	env.Status.Phase = v1alpha1.PhaseTerminating
+	env.Status.Phase = v1alpha1.EnvironmentPhaseTerminating
 
 	if template != nil && meta.IsStatusConditionTrue(env.Status.Conditions, namespaceBound) {
 		if err := r.ensureDeployerRoleBinding(ctx, targetNs); err != nil && !apierrors.IsNotFound(err) {
@@ -691,10 +691,10 @@ func (r *EphemeralEnvironmentReconciler) setFailed(env *v1alpha1.EphemeralEnviro
 		Message:            message,
 		ObservedGeneration: env.Generation,
 	})
-	if env.Status.Phase != v1alpha1.PhaseFailed {
+	if env.Status.Phase != v1alpha1.EnvironmentPhaseFailed {
 		logf.Log.WithName("ephemeralenvironment").Info("environment failed",
 			"name", env.Name, "reason", reason, "message", message)
 	}
-	env.Status.Phase = v1alpha1.PhaseFailed
+	env.Status.Phase = v1alpha1.EnvironmentPhaseFailed
 	return nil
 }

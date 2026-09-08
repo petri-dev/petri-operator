@@ -76,7 +76,8 @@ func newSharedAdmissionTest(t *testing.T, maxConsumers int32) *sharedAdmissionTe
 }
 
 func (f *sharedAdmissionTest) submit(ctx context.Context) error {
-	return f.admission.submitShared(ctx, f.env, "workload", v1alpha1.ComponentSpec{Name: "db", SharedComponentRef: f.sc.Name})
+	_, err := f.admission.submitShared(ctx, f.env, "workload", v1alpha1.ComponentSpec{Name: "db", SharedComponentRef: f.sc.Name})
+	return err
 }
 
 func (f *sharedAdmissionTest) deleteComponent(t *testing.T) {
