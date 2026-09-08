@@ -15,7 +15,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
 
-func envInPhase(phase v1alpha1.Phase) *v1alpha1.EphemeralEnvironment {
+func envInPhase(phase v1alpha1.EnvironmentPhase) *v1alpha1.EphemeralEnvironment {
 	return &v1alpha1.EphemeralEnvironment{
 		ObjectMeta: metav1.ObjectMeta{Name: "e", Namespace: "default"},
 		Status:     v1alpha1.EphemeralEnvironmentStatus{Phase: phase},
@@ -25,7 +25,7 @@ func envInPhase(phase v1alpha1.Phase) *v1alpha1.EphemeralEnvironment {
 //nolint:paralleltest // phase transition tests share global Prometheus counters and histograms.
 func TestRecordPhaseTransition_EmitsEventOnChange(t *testing.T) {
 	rec := events.NewFakeRecorder(4)
-	recordPhaseTransition(rec, envInPhase(v1alpha1.PhaseReady), v1alpha1.PhaseDeploying)
+	recordPhaseTransition(rec, envInPhase(v1alpha1.EnvironmentPhaseReady), v1alpha1.EnvironmentPhaseDeploying)
 
 	select {
 	case ev := <-rec.Events:
@@ -40,7 +40,7 @@ func TestRecordPhaseTransition_EmitsEventOnChange(t *testing.T) {
 //nolint:paralleltest // Phase transition tests share global Prometheus counters and histograms.
 func TestRecordPhaseTransition_WarningOnFailed(t *testing.T) {
 	rec := events.NewFakeRecorder(4)
-	recordPhaseTransition(rec, envInPhase(v1alpha1.PhaseFailed), v1alpha1.PhaseDeploying)
+	recordPhaseTransition(rec, envInPhase(v1alpha1.EnvironmentPhaseFailed), v1alpha1.EnvironmentPhaseDeploying)
 
 	ev := <-rec.Events
 	if want := "Warning Failed environment Failed"; ev != want {
@@ -51,7 +51,7 @@ func TestRecordPhaseTransition_WarningOnFailed(t *testing.T) {
 //nolint:paralleltest // Phase transition tests share global Prometheus counters and histograms.
 func TestRecordPhaseTransition_NoEventWhenUnchanged(t *testing.T) {
 	rec := events.NewFakeRecorder(4)
-	recordPhaseTransition(rec, envInPhase(v1alpha1.PhaseReady), v1alpha1.PhaseReady)
+	recordPhaseTransition(rec, envInPhase(v1alpha1.EnvironmentPhaseReady), v1alpha1.EnvironmentPhaseReady)
 
 	select {
 	case ev := <-rec.Events:
@@ -62,13 +62,13 @@ func TestRecordPhaseTransition_NoEventWhenUnchanged(t *testing.T) {
 
 //nolint:paralleltest // Phase transition tests share global Prometheus counters and histograms.
 func TestRecordPhaseTransition_NilRecorderSafe(t *testing.T) {
-	recordPhaseTransition(nil, envInPhase(v1alpha1.PhaseReady), v1alpha1.PhaseDeploying)
+	recordPhaseTransition(nil, envInPhase(v1alpha1.EnvironmentPhaseReady), v1alpha1.EnvironmentPhaseDeploying)
 }
 
 //nolint:paralleltest // Phase transition tests share global Prometheus counters and histograms.
 func TestRecordPhaseTransition_SkipsEmptyPhase(t *testing.T) {
 	rec := events.NewFakeRecorder(4)
-	recordPhaseTransition(rec, envInPhase(""), v1alpha1.PhaseReady)
+	recordPhaseTransition(rec, envInPhase(""), v1alpha1.EnvironmentPhaseReady)
 
 	select {
 	case ev := <-rec.Events:
@@ -79,13 +79,13 @@ func TestRecordPhaseTransition_SkipsEmptyPhase(t *testing.T) {
 
 //nolint:paralleltest // Phase transition tests share global Prometheus counters and histograms.
 func TestRecordPhaseTransition_CountsAndFailures(t *testing.T) {
-	beforeReady := testutil.ToFloat64(phaseTransitions.WithLabelValues(string(v1alpha1.PhaseReady)))
+	beforeReady := testutil.ToFloat64(phaseTransitions.WithLabelValues(string(v1alpha1.EnvironmentPhaseReady)))
 	beforeFail := testutil.ToFloat64(deployFailures)
 
-	recordPhaseTransition(nil, envInPhase(v1alpha1.PhaseReady), v1alpha1.PhaseDeploying)
-	recordPhaseTransition(nil, envInPhase(v1alpha1.PhaseFailed), v1alpha1.PhaseDeploying)
+	recordPhaseTransition(nil, envInPhase(v1alpha1.EnvironmentPhaseReady), v1alpha1.EnvironmentPhaseDeploying)
+	recordPhaseTransition(nil, envInPhase(v1alpha1.EnvironmentPhaseFailed), v1alpha1.EnvironmentPhaseDeploying)
 
-	if got := testutil.ToFloat64(phaseTransitions.WithLabelValues(string(v1alpha1.PhaseReady))); got != beforeReady+1 {
+	if got := testutil.ToFloat64(phaseTransitions.WithLabelValues(string(v1alpha1.EnvironmentPhaseReady))); got != beforeReady+1 {
 		t.Fatalf("Ready transitions: got %v, want %v", got, beforeReady+1)
 	}
 	if got := testutil.ToFloat64(deployFailures); got != beforeFail+1 {
@@ -99,13 +99,13 @@ func TestDeployDurationUsesDeploymentStart(t *testing.T) {
 	if err := deployDuration.Write(before); err != nil {
 		t.Fatal(err)
 	}
-	env := envInPhase(v1alpha1.PhaseReady)
+	env := envInPhase(v1alpha1.EnvironmentPhaseReady)
 	env.CreationTimestamp = metav1.NewTime(time.Now().Add(-time.Hour))
 	env.Status.DeployStartedAt = new(metav1.NewTime(time.Now().Add(-10 * time.Second)))
-	recordPhaseTransition(nil, env, v1alpha1.PhaseDeploying)
+	recordPhaseTransition(nil, env, v1alpha1.EnvironmentPhaseDeploying)
 	// An object without a recorded start must not contribute its creation age.
 	env.Status.DeployStartedAt = nil
-	recordPhaseTransition(nil, env, v1alpha1.PhaseDeploying)
+	recordPhaseTransition(nil, env, v1alpha1.EnvironmentPhaseDeploying)
 	after := &dto.Metric{}
 	if err := deployDuration.Write(after); err != nil {
 		t.Fatal(err)
@@ -127,7 +127,7 @@ func TestReconcileRecordsRedeployment(t *testing.T) {
 	if err := v1alpha1.AddToScheme(s); err != nil {
 		t.Fatal(err)
 	}
-	for _, phase := range []v1alpha1.Phase{v1alpha1.PhaseReady, v1alpha1.PhaseFailed} {
+	for _, phase := range []v1alpha1.EnvironmentPhase{v1alpha1.EnvironmentPhaseReady, v1alpha1.EnvironmentPhaseFailed} {
 		t.Run(string(phase), func(t *testing.T) {
 			env := envInPhase(phase)
 			env.UID = "redeploy-uid"
@@ -144,8 +144,8 @@ func TestReconcileRecordsRedeployment(t *testing.T) {
 			if err := c.Status().Update(t.Context(), env); err != nil {
 				t.Fatal(err)
 			}
-			ready := phaseTransitions.WithLabelValues(string(v1alpha1.PhaseReady))
-			deploying := phaseTransitions.WithLabelValues(string(v1alpha1.PhaseDeploying))
+			ready := phaseTransitions.WithLabelValues(string(v1alpha1.EnvironmentPhaseReady))
+			deploying := phaseTransitions.WithLabelValues(string(v1alpha1.EnvironmentPhaseDeploying))
 			beforeReady, beforeDeploying := testutil.ToFloat64(ready), testutil.ToFloat64(deploying)
 			start := time.Now().Truncate(time.Second)
 			for range 3 {

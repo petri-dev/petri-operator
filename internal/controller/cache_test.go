@@ -30,7 +30,7 @@ func TestStaleProvisionResultRetainsCredentials(t *testing.T) {
 				r, env := namespaceFixture(t)
 				env.Status.TargetNamespace = "workload"
 				component := v1alpha1.ComponentSpec{Name: "db", SharedComponentRef: "db"}
-				env.Status.Components = []v1alpha1.ComponentStatus{{Name: "db", Phase: v1alpha1.PhaseSubmitting}}
+				env.Status.Components = []v1alpha1.ComponentStatus{{Name: "db", Phase: v1alpha1.ComponentPhaseSubmitting}}
 				sc := &v1alpha1.SharedComponent{ObjectMeta: metav1.ObjectMeta{Name: "db", Namespace: env.Namespace}, Spec: v1alpha1.SharedComponentSpec{Provider: "provider"}}
 				script := &v1alpha1.JobScript{Image: "busybox", Script: "true"}
 				scp := &v1alpha1.SharedComponentProvider{ObjectMeta: metav1.ObjectMeta{Name: "provider", Namespace: env.Namespace}, Spec: v1alpha1.SharedComponentProviderSpec{Provision: script, Deprovision: script}}
@@ -176,7 +176,7 @@ func TestSubmitRacesDoNotChargeRetry(t *testing.T) {
 			_, err := r.submitDeploys(t.Context(), env, "workload", []v1alpha1.ComponentSpec{component})
 			g.Expect(err).NotTo(HaveOccurred())
 			g.Expect(findComponent(env, component.Name).DeployRetries).To(BeZero())
-			g.Expect(findComponent(env, component.Name).Phase).To(Equal(v1alpha1.PhaseSubmitting))
+			g.Expect(findComponent(env, component.Name).Phase).To(Equal(v1alpha1.ComponentPhaseSubmitting))
 		})
 	}
 }

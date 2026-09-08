@@ -104,6 +104,12 @@ spec:
                     name:
                       type: string
                     phase:
+                      enum:
+                      - Pending
+                      - Submitting
+                      - Deploying
+                      - Ready
+                      - Failed
                       type: string
                     shared:
                       type: boolean

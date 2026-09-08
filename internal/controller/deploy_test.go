@@ -1,7 +1,9 @@
 package controller
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"testing"
 	"time"
 
@@ -10,22 +12,126 @@ import (
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/kubernetes/scheme"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )
 
+func TestParallelSharedSubmitStatus(t *testing.T) {
+	t.Parallel()
+	for _, existingStatus := range []bool{false, true} {
+		t.Run(fmt.Sprintf("existing-status=%t", existingStatus), func(t *testing.T) {
+			t.Parallel()
+			g := NewWithT(t)
+			s := runtime.NewScheme()
+			g.Expect(scheme.AddToScheme(s)).To(Succeed())
+			g.Expect(v1alpha1.AddToScheme(s)).To(Succeed())
+			env := &v1alpha1.EphemeralEnvironment{ObjectMeta: metav1.ObjectMeta{Name: "env", Namespace: "management"}}
+			env.Spec.Template = "template"
+			level := []v1alpha1.ComponentSpec{
+				{Name: "db1", SharedComponentRef: "db1"},
+				{Name: "db2", SharedComponentRef: "db2"},
+				{Name: "db3", SharedComponentRef: "db3"},
+				{Name: "db4", SharedComponentRef: "db4"},
+				{Name: "app", Helm: helmSpec()},
+			}
+			ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "workload", Labels: map[string]string{}}}
+			provider := &v1alpha1.SharedComponentProvider{
+				ObjectMeta: metav1.ObjectMeta{Name: "provisioned", Namespace: env.Namespace},
+				Spec:       v1alpha1.SharedComponentProviderSpec{Provision: &v1alpha1.JobScript{Image: "busybox", Script: "true"}},
+			}
+			objects := []client.Object{provider, &v1alpha1.EnvironmentTemplate{
+				ObjectMeta: metav1.ObjectMeta{Name: env.Spec.Template, Namespace: env.Namespace},
+				Spec:       v1alpha1.EnvironmentTemplateSpec{Components: level},
+			}}
+			for i, component := range level {
+				if existingStatus {
+					env.Status.Components = append(env.Status.Components, v1alpha1.ComponentStatus{
+						Name: component.Name, Phase: v1alpha1.ComponentPhasePending, DeployRetries: 2, LastFailureReason: "previous failure",
+					})
+				}
+				if component.SharedComponentRef == "" {
+					continue
+				}
+				ns.Labels[sharedLabel(component.SharedComponentRef)] = "true"
+				providerName := "provider"
+				if i >= 2 {
+					providerName = provider.Name
+				}
+				objects = append(objects, &v1alpha1.SharedComponent{
+					ObjectMeta: metav1.ObjectMeta{Name: component.SharedComponentRef, Namespace: env.Namespace},
+					Spec:       v1alpha1.SharedComponentSpec{Provider: providerName},
+					Status:     v1alpha1.SharedComponentStatus{Ready: true},
+				})
+			}
+			objects = append(objects, ns, &v1alpha1.SharedComponentProvider{ObjectMeta: metav1.ObjectMeta{Name: "provider", Namespace: env.Namespace}})
+			live := fake.NewClientBuilder().WithScheme(s).WithObjects(objects...).Build()
+			entered, release := make(chan struct{}, 4), make(chan struct{})
+			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+			defer cancel()
+			blocked := interceptor.NewClient(live, interceptor.Funcs{
+				Create: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
+					err := c.Create(ctx, obj, opts...)
+					if _, ok := obj.(*corev1.Secret); ok && obj.GetNamespace() == ns.Name {
+						entered <- struct{}{}
+						select {
+						case <-release:
+						case <-ctx.Done():
+							return ctx.Err()
+						}
+					}
+					return err
+				},
+			})
+			r := &EphemeralEnvironmentReconciler{Client: blocked, APIReader: live, Deployer: newFakeDeployer(), Provisioner: newFakeProvisioner()}
+			before := env.DeepCopy()
+			result := make(chan error, 1)
+			go func() {
+				_, err := r.processLevel(ctx, env, ns.Name, level, nil, time.Minute)
+				result <- err
+			}()
+			for range 4 {
+				select {
+				case <-entered:
+				case <-ctx.Done():
+					t.Fatal("shared submissions did not reach binding creation concurrently")
+				}
+			}
+			g.Expect(env).To(Equal(before))
+			close(release)
+			g.Expect(<-result).To(Succeed())
+			g.Expect(env.Status.Components).To(HaveLen(len(level)))
+			for i, component := range level {
+				phase := v1alpha1.ComponentPhaseSubmitting
+				if i < 2 {
+					phase = v1alpha1.ComponentPhaseReady
+				}
+				want := &v1alpha1.ComponentStatus{Name: component.Name, Phase: phase, Shared: component.SharedComponentRef != ""}
+				if existingStatus && phase != v1alpha1.ComponentPhaseReady {
+					want.DeployRetries, want.LastFailureReason = 2, "previous failure"
+				}
+				g.Expect(findComponent(env, component.Name)).To(Equal(want))
+			}
+			g.Expect(env.ObjectMeta).To(Equal(before.ObjectMeta))
+			g.Expect(env.Spec).To(Equal(before.Spec))
+		})
+	}
+}
+
 func TestReadinessRetryLifecycle(t *testing.T) {
 	t.Parallel()
 	env := &v1alpha1.EphemeralEnvironment{}
 	component := v1alpha1.ComponentSpec{Name: "app"}
-	setComponentPhase(env, component.Name, v1alpha1.PhaseDeploying)
+	setComponentPhase(env, component.Name, v1alpha1.ComponentPhaseDeploying)
 	setComponentDeployingSince(env, component.Name, metav1.NewTime(time.Now().Add(-time.Hour)))
 	sibling := v1alpha1.ComponentSpec{Name: "sibling"}
-	setComponentPhase(env, sibling.Name, v1alpha1.PhaseDeploying)
+	setComponentPhase(env, sibling.Name, v1alpha1.ComponentPhaseDeploying)
 	checker := newFakeChecker()
 	checker.setReady("-sibling", true)
 	r := &EphemeralEnvironmentReconciler{Checker: checker}
@@ -34,11 +140,11 @@ func TestReadinessRetryLifecycle(t *testing.T) {
 	if err != nil || res.RequeueAfter != deployBackoff(env, components) {
 		t.Fatalf("readiness retry: %+v, %v", res, err)
 	}
-	if findComponent(env, sibling.Name).Phase != v1alpha1.PhaseReady {
+	if findComponent(env, sibling.Name).Phase != v1alpha1.ComponentPhaseReady {
 		t.Fatal("timeout must not skip checking the next component")
 	}
 	cs := findComponent(env, component.Name)
-	if cs.Phase != v1alpha1.PhasePending || cs.DeployRetries != 1 || cs.DeployingSince != nil {
+	if cs.Phase != v1alpha1.ComponentPhasePending || cs.DeployRetries != 1 || cs.DeployingSince != nil {
 		t.Fatalf("retry status: %+v", cs)
 	}
 	if r.deployOpts(env, "workload", component).Attempt != 1 {
@@ -87,7 +193,7 @@ var _ = Describe("Deploy Job lifecycle", func() {
 			finishJob(ctx, job, condition)
 		}
 		finish(batchv1.JobComplete)
-		Eventually(func() v1alpha1.Phase { step(); return env.Status.Phase }, "10s", "10ms").Should(Equal(v1alpha1.PhaseReady))
+		Eventually(func() v1alpha1.EnvironmentPhase { step(); return env.Status.Phase }, "10s", "10ms").Should(Equal(v1alpha1.EnvironmentPhaseReady))
 		originalUID := job.UID
 		env.Spec.Values["replicaCount"] = "2"
 		Expect(k8sClient.Update(ctx, env)).To(Succeed())
@@ -101,7 +207,7 @@ var _ = Describe("Deploy Job lifecycle", func() {
 		for range 4 {
 			step()
 		}
-		Expect(env.Status.Phase).NotTo(Equal(v1alpha1.PhaseReady))
+		Expect(env.Status.Phase).NotTo(Equal(v1alpha1.EnvironmentPhaseReady))
 		Expect(findComponent(env, "svc").DeployRetries).To(BeZero())
 		Expect(job.UID).To(Equal(originalUID))
 		job.Finalizers = nil
@@ -136,7 +242,7 @@ var _ = Describe("Deploy Job lifecycle", func() {
 		}
 		Expect(payload.Attempt).To(Equal(int32(1)))
 		finish(batchv1.JobComplete)
-		Eventually(func() v1alpha1.Phase { step(); return env.Status.Phase }, "10s", "10ms").Should(Equal(v1alpha1.PhaseReady))
+		Eventually(func() v1alpha1.EnvironmentPhase { step(); return env.Status.Phase }, "10s", "10ms").Should(Equal(v1alpha1.EnvironmentPhaseReady))
 		Expect(findComponent(env, "svc").DeployRetries).To(BeZero())
 	})
 })

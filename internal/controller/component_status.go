@@ -23,16 +23,16 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-func allReady(level []v1alpha1.ComponentSpec, phaseByName map[string]v1alpha1.Phase) bool {
+func allReady(level []v1alpha1.ComponentSpec, phaseByName map[string]v1alpha1.ComponentPhase) bool {
 	for _, component := range level {
-		if phaseByName[component.Name] != v1alpha1.PhaseReady {
+		if phaseByName[component.Name] != v1alpha1.ComponentPhaseReady {
 			return false
 		}
 	}
 	return true
 }
 
-func setComponentPhase(env *v1alpha1.EphemeralEnvironment, name string, phase v1alpha1.Phase) {
+func setComponentPhase(env *v1alpha1.EphemeralEnvironment, name string, phase v1alpha1.ComponentPhase) {
 	if cs := findComponent(env, name); cs != nil {
 		cs.Phase = phase
 		return
@@ -53,14 +53,14 @@ func recordRuntimeFailure(env *v1alpha1.EphemeralEnvironment, name, reason strin
 	if cs := findComponent(env, name); cs != nil {
 		cs.DeployRetries++
 		cs.LastFailureReason = reason
-		cs.Phase = v1alpha1.PhasePending
+		cs.Phase = v1alpha1.ComponentPhasePending
 		cs.DeployingSince = nil
 		return cs.DeployRetries >= maxDeployRetries
 	}
 
 	env.Status.Components = append(env.Status.Components, v1alpha1.ComponentStatus{
 		Name:              name,
-		Phase:             v1alpha1.PhasePending,
+		Phase:             v1alpha1.ComponentPhasePending,
 		DeployRetries:     1,
 		LastFailureReason: reason,
 	})

@@ -32,20 +32,21 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes/scheme"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )
 
-func reconcileUntilTerminal(r *EphemeralEnvironmentReconciler, key types.NamespacedName, maxIterations int) corev1alpha1.Phase {
+func reconcileUntilTerminal(r *EphemeralEnvironmentReconciler, key types.NamespacedName, maxIterations int) corev1alpha1.EnvironmentPhase {
 	for range maxIterations {
 		_, err := r.Reconcile(tctx, reconcile.Request{NamespacedName: key})
 		Expect(err).NotTo(HaveOccurred())
 
 		env := &corev1alpha1.EphemeralEnvironment{}
 		Expect(k8sClient.Get(tctx, key, env)).To(Succeed())
-		if env.Status.Phase == corev1alpha1.PhaseReady || env.Status.Phase == corev1alpha1.PhaseFailed {
+		if env.Status.Phase == corev1alpha1.EnvironmentPhaseReady || env.Status.Phase == corev1alpha1.EnvironmentPhaseFailed {
 			return env.Status.Phase
 		}
 	}
@@ -165,6 +166,31 @@ var _ = Describe("EphemeralEnvironment Controller", func() {
 		Expect(k8sClient.Create(tctx, ns)).To(Succeed())
 	})
 
+	It("validates environment and component phase enums", func() {
+		env := getEnv(makeEnv(testNS, "phase-schema", "tmpl"))
+		sc := &corev1alpha1.SharedComponent{}
+		Expect(k8sClient.Get(tctx, makeSC(testNS, "phase-schema", "provider", 0), sc)).To(Succeed())
+		for _, phase := range []string{"Pending", "Submitting", "Deploying", "Ready", "Failed", "Terminating", "Unknown"} {
+			componentAllowed := phase != "Terminating" && phase != "Unknown"
+			for _, tc := range []struct {
+				object  client.Object
+				status  string
+				allowed bool
+			}{
+				{env, fmt.Sprintf(`{"phase":%q}`, phase), phase != "Submitting" && phase != "Unknown"},
+				{env, fmt.Sprintf(`{"components":[{"name":"svc","shared":false,"phase":%q}]}`, phase), componentAllowed},
+				{sc, fmt.Sprintf(`{"phase":%q}`, phase), componentAllowed},
+			} {
+				err := k8sClient.Status().Patch(tctx, tc.object, client.RawPatch(types.MergePatchType, []byte(`{"status":`+tc.status+`}`)))
+				if tc.allowed {
+					Expect(err).NotTo(HaveOccurred(), "%T: %s", tc.object, tc.status)
+				} else {
+					Expect(apierrors.IsInvalid(err)).To(BeTrue(), "%T: %s: %v", tc.object, tc.status, err)
+				}
+			}
+		}
+	})
+
 	Context("single service", func() {
 		It("reaches Ready and cleans up on delete", func() {
 			fd := newFakeDeployer()
@@ -181,7 +207,7 @@ var _ = Describe("EphemeralEnvironment Controller", func() {
 			fc.setReady(releaseName, true)
 
 			phase := reconcileUntilTerminal(r, key, 20)
-			Expect(phase).To(Equal(corev1alpha1.PhaseReady))
+			Expect(phase).To(Equal(corev1alpha1.EnvironmentPhaseReady))
 
 			targetNs := &corev1.Namespace{}
 			Expect(k8sClient.Get(tctx, types.NamespacedName{Name: getEnv(key).Status.TargetNamespace}, targetNs)).To(Succeed())
@@ -222,7 +248,7 @@ var _ = Describe("EphemeralEnvironment Controller", func() {
 			fd.setOutcome("grow-1-svc", deployer.SucceededJobPhase, "")
 			fc.setReady("grow-1-svc", true)
 
-			Expect(reconcileUntilTerminal(r, key, 20)).To(Equal(corev1alpha1.PhaseReady))
+			Expect(reconcileUntilTerminal(r, key, 20)).To(Equal(corev1alpha1.EnvironmentPhaseReady))
 			genAtReady := getEnv(key).Generation
 
 			tmpl := &corev1alpha1.EnvironmentTemplate{}
@@ -234,12 +260,12 @@ var _ = Describe("EphemeralEnvironment Controller", func() {
 			Expect(err).NotTo(HaveOccurred())
 			env := getEnv(key)
 			Expect(env.Generation).To(Equal(genAtReady), "env spec unchanged")
-			Expect(env.Status.Phase).To(Equal(corev1alpha1.PhaseDeploying),
+			Expect(env.Status.Phase).To(Equal(corev1alpha1.EnvironmentPhaseDeploying),
 				"env must redeploy, not keep reporting Ready while svc2 is pending")
 
 			fd.setOutcome("grow-1-svc2", deployer.SucceededJobPhase, "")
 			fc.setReady("grow-1-svc2", true)
-			Expect(reconcileUntilTerminal(r, key, 20)).To(Equal(corev1alpha1.PhaseReady))
+			Expect(reconcileUntilTerminal(r, key, 20)).To(Equal(corev1alpha1.EnvironmentPhaseReady))
 			Expect(fd.SubmitCount("grow-1-svc2")).To(Equal(1))
 		})
 	})
@@ -258,7 +284,7 @@ var _ = Describe("EphemeralEnvironment Controller", func() {
 			fd.setOutcome("sa-1-svc", deployer.SucceededJobPhase, "")
 			fc.setReady("sa-1-svc", true)
 
-			Expect(reconcileUntilTerminal(r, key, 20)).To(Equal(corev1alpha1.PhaseReady))
+			Expect(reconcileUntilTerminal(r, key, 20)).To(Equal(corev1alpha1.EnvironmentPhaseReady))
 
 			targetNs := getEnv(key).Status.TargetNamespace
 			// The SA the deploy Jobs run as must exist under the configured name,
@@ -294,7 +320,7 @@ var _ = Describe("EphemeralEnvironment Controller", func() {
 
 				env := getEnv(key)
 				if wantReason != "" {
-					Expect(env.Status.Phase).To(Equal(corev1alpha1.PhaseFailed))
+					Expect(env.Status.Phase).To(Equal(corev1alpha1.EnvironmentPhaseFailed))
 					Expect(failureReason(env)).To(Equal(wantReason))
 					Expect(fd.submitOrder()).To(BeEmpty())
 					ns := new(corev1.Namespace)
@@ -440,7 +466,7 @@ var _ = Describe("EphemeralEnvironment Controller", func() {
 			}
 
 			phase := reconcileUntilTerminal(r, key, 30)
-			Expect(phase).To(Equal(corev1alpha1.PhaseReady))
+			Expect(phase).To(Equal(corev1alpha1.EnvironmentPhaseReady))
 
 			order := fd.submitOrder()
 			pgIdx := slices.Index(order, "env-postgres")
@@ -469,7 +495,7 @@ var _ = Describe("EphemeralEnvironment Controller", func() {
 			}
 
 			phase := reconcileUntilTerminal(r, key, 30)
-			Expect(phase).To(Equal(corev1alpha1.PhaseReady))
+			Expect(phase).To(Equal(corev1alpha1.EnvironmentPhaseReady))
 
 			env := getEnv(key)
 			Expect(k8sClient.Delete(tctx, env)).To(Succeed())
@@ -507,7 +533,7 @@ var _ = Describe("EphemeralEnvironment Controller", func() {
 			}
 
 			phase := reconcileUntilTerminal(r, key, 40)
-			Expect(phase).To(Equal(corev1alpha1.PhaseReady))
+			Expect(phase).To(Equal(corev1alpha1.EnvironmentPhaseReady))
 
 			order := fd.submitOrder()
 
@@ -542,7 +568,7 @@ var _ = Describe("EphemeralEnvironment Controller", func() {
 				_, err := r.Reconcile(tctx, reconcile.Request{NamespacedName: key})
 				Expect(err).NotTo(HaveOccurred())
 				env := getEnv(key)
-				if env.Status.Phase == corev1alpha1.PhaseFailed {
+				if env.Status.Phase == corev1alpha1.EnvironmentPhaseFailed {
 					return true // retries exhausted is also acceptable exit
 				}
 				cs := findComponent(env, "svc")
@@ -550,7 +576,7 @@ var _ = Describe("EphemeralEnvironment Controller", func() {
 			}, "30s", "10ms").Should(BeTrue())
 
 			env := getEnv(key)
-			if env.Status.Phase == corev1alpha1.PhaseFailed {
+			if env.Status.Phase == corev1alpha1.EnvironmentPhaseFailed {
 				cs := findComponent(env, "svc")
 				Expect(cs).NotTo(BeNil())
 				Expect(cs.DeployRetries).To(BeNumerically(">=", 1))
@@ -559,11 +585,11 @@ var _ = Describe("EphemeralEnvironment Controller", func() {
 
 			cs := findComponent(env, "svc")
 			Expect(cs).NotTo(BeNil())
-			Expect(cs.Phase).To(Equal(corev1alpha1.PhasePending))
+			Expect(cs.Phase).To(Equal(corev1alpha1.ComponentPhasePending))
 
 			fd.setOutcome(release, deployer.SucceededJobPhase, "")
 			phase := reconcileUntilTerminal(r, key, 20)
-			Expect(phase).To(Equal(corev1alpha1.PhaseReady))
+			Expect(phase).To(Equal(corev1alpha1.EnvironmentPhaseReady))
 		})
 
 		It("reaches terminal Failed after maxDeployRetries exhausted", func() {
@@ -580,7 +606,7 @@ var _ = Describe("EphemeralEnvironment Controller", func() {
 			fd.setOutcome(release, deployer.FailedJobPhase, "chart not found")
 
 			phase := reconcileUntilTerminal(r, key, 50)
-			Expect(phase).To(Equal(corev1alpha1.PhaseFailed))
+			Expect(phase).To(Equal(corev1alpha1.EnvironmentPhaseFailed))
 
 			env := getEnv(key)
 			Expect(failureReason(env)).To(Equal("DeployFailed"))
@@ -604,7 +630,7 @@ var _ = Describe("EphemeralEnvironment Controller", func() {
 
 			fd.setOutcome(release, deployer.FailedJobPhase, "bad chart")
 			phase := reconcileUntilTerminal(r, key, 50)
-			Expect(phase).To(Equal(corev1alpha1.PhaseFailed))
+			Expect(phase).To(Equal(corev1alpha1.EnvironmentPhaseFailed))
 
 			env := getEnv(key)
 			patch := env.DeepCopy()
@@ -615,7 +641,7 @@ var _ = Describe("EphemeralEnvironment Controller", func() {
 			fc.setReady(release, true)
 
 			phase = reconcileUntilTerminal(r, key, 30)
-			Expect(phase).To(Equal(corev1alpha1.PhaseReady))
+			Expect(phase).To(Equal(corev1alpha1.EnvironmentPhaseReady))
 
 			env = getEnv(key)
 			Expect(env.Status.ObservedGeneration).To(Equal(env.Generation))
@@ -635,7 +661,7 @@ var _ = Describe("EphemeralEnvironment Controller", func() {
 			release := "env-svc"
 
 			fd.setOutcome(release, deployer.FailedJobPhase, "old failure")
-			Expect(reconcileUntilTerminal(r, key, 50)).To(Equal(corev1alpha1.PhaseFailed))
+			Expect(reconcileUntilTerminal(r, key, 50)).To(Equal(corev1alpha1.EnvironmentPhaseFailed))
 
 			env := getEnv(key)
 			patch := env.DeepCopy()
@@ -646,7 +672,7 @@ var _ = Describe("EphemeralEnvironment Controller", func() {
 			fc.setReady(release, true)
 
 			phase := reconcileUntilTerminal(r, key, 30)
-			Expect(phase).To(Equal(corev1alpha1.PhaseReady))
+			Expect(phase).To(Equal(corev1alpha1.EnvironmentPhaseReady))
 		})
 	})
 
@@ -659,7 +685,7 @@ var _ = Describe("EphemeralEnvironment Controller", func() {
 			key := makeEnv(testNS, "test-s1", "does-not-exist")
 
 			phase := reconcileUntilTerminal(r, key, 10)
-			Expect(phase).To(Equal(corev1alpha1.PhaseFailed))
+			Expect(phase).To(Equal(corev1alpha1.EnvironmentPhaseFailed))
 
 			env := getEnv(key)
 			Expect(failureReason(env)).To(Equal("TemplateNotFound"))
@@ -682,7 +708,7 @@ var _ = Describe("EphemeralEnvironment Controller", func() {
 			key := makeEnv(testNS, "test-s3", "tmpl")
 
 			phase := reconcileUntilTerminal(r, key, 10)
-			Expect(phase).To(Equal(corev1alpha1.PhaseFailed))
+			Expect(phase).To(Equal(corev1alpha1.EnvironmentPhaseFailed))
 
 			env := getEnv(key)
 			Expect(failureReason(env)).To(Equal("InvalidConfiguration"))
@@ -700,7 +726,7 @@ var _ = Describe("EphemeralEnvironment Controller", func() {
 			key := makeEnv(testNS, "very-long-env-name-that-breaks-limit", "tmpl")
 
 			phase := reconcileUntilTerminal(r, key, 10)
-			Expect(phase).To(Equal(corev1alpha1.PhaseFailed))
+			Expect(phase).To(Equal(corev1alpha1.EnvironmentPhaseFailed))
 
 			env := getEnv(key)
 			Expect(failureReason(env)).To(Equal("InvalidConfiguration"))
@@ -721,7 +747,7 @@ var _ = Describe("EphemeralEnvironment Controller", func() {
 			fd.setOutcome(release, deployer.FailedJobPhase, "chart not found: this-chart-does-not-exist-xyz")
 
 			phase := reconcileUntilTerminal(r, key, 50)
-			Expect(phase).To(Equal(corev1alpha1.PhaseFailed))
+			Expect(phase).To(Equal(corev1alpha1.EnvironmentPhaseFailed))
 
 			env := getEnv(key)
 			Expect(failureReason(env)).To(Equal("DeployFailed"))
@@ -744,7 +770,7 @@ var _ = Describe("EphemeralEnvironment Controller", func() {
 			fd.setSubmitError(release, errors.New("registry auth failed"))
 
 			phase := reconcileUntilTerminal(r, key, 50)
-			Expect(phase).To(Equal(corev1alpha1.PhaseFailed))
+			Expect(phase).To(Equal(corev1alpha1.EnvironmentPhaseFailed))
 
 			env := getEnv(key)
 			Expect(failureReason(env)).To(Equal("DeployFailed"))
@@ -765,7 +791,7 @@ var _ = Describe("EphemeralEnvironment Controller", func() {
 			fc.setReady(release, true)
 
 			phase := reconcileUntilTerminal(r, key, 20)
-			Expect(phase).To(Equal(corev1alpha1.PhaseReady))
+			Expect(phase).To(Equal(corev1alpha1.EnvironmentPhaseReady))
 
 			fd.setUndeployFail(release, maxDeployRetries+10)
 
@@ -854,7 +880,7 @@ var _ = Describe("EphemeralEnvironment shared component integration", func() {
 			targetNs := shortNamespace(key)
 
 			phase := reconcileUntilTerminal(r, key, 30)
-			Expect(phase).To(Equal(corev1alpha1.PhaseReady))
+			Expect(phase).To(Equal(corev1alpha1.EnvironmentPhaseReady))
 
 			bindingName := envName + "-redis-binding"
 			binding := &corev1.Secret{}
@@ -900,7 +926,7 @@ var _ = Describe("EphemeralEnvironment shared component integration", func() {
 
 			key := makeEnv(testNS, envName, "tmpl")
 			phase := reconcileUntilTerminal(r, key, 60)
-			Expect(phase).To(Equal(corev1alpha1.PhaseFailed))
+			Expect(phase).To(Equal(corev1alpha1.EnvironmentPhaseFailed))
 		})
 	})
 
@@ -927,7 +953,7 @@ var _ = Describe("EphemeralEnvironment shared component integration", func() {
 			targetNs := shortNamespace(key)
 
 			phase := reconcileUntilTerminal(r, key, 20)
-			Expect(phase).To(Equal(corev1alpha1.PhaseReady))
+			Expect(phase).To(Equal(corev1alpha1.EnvironmentPhaseReady))
 
 			Expect(fp.ProvisionCount(envName, "cache")).To(Equal(0))
 
@@ -964,7 +990,7 @@ var _ = Describe("EphemeralEnvironment shared component integration", func() {
 			targetNs := shortNamespace(key)
 
 			phase := reconcileUntilTerminal(r, key, 5)
-			Expect(phase).To(Equal(corev1alpha1.PhaseDeploying))
+			Expect(phase).To(Equal(corev1alpha1.EnvironmentPhaseDeploying))
 
 			binding := &corev1.Secret{}
 			err := k8sClient.Get(tctx, types.NamespacedName{
@@ -999,13 +1025,13 @@ var _ = Describe("EphemeralEnvironment shared component integration", func() {
 			key1 := makeEnv(testNS, envA, "tmpl")
 
 			phase1 := reconcileUntilTerminal(r, key1, 30)
-			Expect(phase1).To(Equal(corev1alpha1.PhaseReady))
+			Expect(phase1).To(Equal(corev1alpha1.EnvironmentPhaseReady))
 
 			envB := testNS + "-b"
 			key2 := makeEnv(testNS, envB, "tmpl")
 
 			phase2 := reconcileUntilTerminal(r, key2, 10)
-			Expect(phase2).To(Equal(corev1alpha1.PhaseFailed))
+			Expect(phase2).To(Equal(corev1alpha1.EnvironmentPhaseFailed))
 
 			env2 := getEnv(key2)
 			Expect(failureReason(env2)).To(Equal("SharedComponentAtCapacity"))
@@ -1051,7 +1077,7 @@ var _ = Describe("EphemeralEnvironment shared component integration", func() {
 			targetNs := shortNamespace(key)
 
 			phase := reconcileUntilTerminal(r, key, 30)
-			Expect(phase).To(Equal(corev1alpha1.PhaseReady))
+			Expect(phase).To(Equal(corev1alpha1.EnvironmentPhaseReady))
 
 			binding := &corev1.Secret{}
 			Expect(k8sClient.Get(tctx, types.NamespacedName{

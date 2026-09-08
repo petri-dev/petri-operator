@@ -21,15 +21,26 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 )
 
-type Phase string
+// +kubebuilder:validation:Enum=Pending;Deploying;Ready;Failed;Terminating
+type EnvironmentPhase string
 
 const (
-	PhasePending     Phase = "Pending"
-	PhaseSubmitting  Phase = "Submitting"
-	PhaseDeploying   Phase = "Deploying"
-	PhaseReady       Phase = "Ready"
-	PhaseFailed      Phase = "Failed"
-	PhaseTerminating Phase = "Terminating"
+	EnvironmentPhasePending     EnvironmentPhase = "Pending"
+	EnvironmentPhaseDeploying   EnvironmentPhase = "Deploying"
+	EnvironmentPhaseReady       EnvironmentPhase = "Ready"
+	EnvironmentPhaseFailed      EnvironmentPhase = "Failed"
+	EnvironmentPhaseTerminating EnvironmentPhase = "Terminating"
+)
+
+// +kubebuilder:validation:Enum=Pending;Submitting;Deploying;Ready;Failed
+type ComponentPhase string
+
+const (
+	ComponentPhasePending    ComponentPhase = "Pending"
+	ComponentPhaseSubmitting ComponentPhase = "Submitting"
+	ComponentPhaseDeploying  ComponentPhase = "Deploying"
+	ComponentPhaseReady      ComponentPhase = "Ready"
+	ComponentPhaseFailed     ComponentPhase = "Failed"
 )
 
 // EphemeralEnvironmentSpec defines the desired state of EphemeralEnvironment.
@@ -56,9 +67,9 @@ type SourceSpec struct {
 }
 
 type ComponentStatus struct {
-	Name   string `json:"name"`
-	Shared bool   `json:"shared"`
-	Phase  Phase  `json:"phase"`
+	Name   string         `json:"name"`
+	Shared bool           `json:"shared"`
+	Phase  ComponentPhase `json:"phase"`
 	// +optional
 	DeployRetries int32 `json:"deployRetries,omitempty"`
 	// +optional
@@ -80,8 +91,7 @@ type EphemeralEnvironmentStatus struct {
 	// +optional
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
 
-	// +kubebuilder:validation:Enum=Pending;Deploying;Ready;Failed;Terminating
-	Phase Phase `json:"phase,omitempty"`
+	Phase EnvironmentPhase `json:"phase,omitempty"`
 
 	// DeployStartedAt is the start of the current deployment attempt, reset on spec changes.
 	// +optional
