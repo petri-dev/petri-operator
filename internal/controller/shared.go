@@ -28,25 +28,27 @@ var (
 	errAtCapacity     = errors.New("shared component at capacity")
 )
 
-func (r *EphemeralEnvironmentReconciler) acquireProvisionLease(ctx context.Context, scName, scNamespace, holderEnvName string) (acquired bool, err error) {
+func acquireProvisionLease(ctx context.Context, c client.Client, reader client.Reader, scName, scNamespace, holder string) (*coordinationv1.Lease, error) {
 	leaseDuration := int32(30)
 	now := metav1.NewMicroTime(metav1.Now().Time)
 	leaseKey := client.ObjectKey{Name: "petri-provision-" + scName, Namespace: scNamespace}
 
 	existing := &coordinationv1.Lease{}
-	if err := r.Get(ctx, leaseKey, existing); err == nil {
+	if err := reader.Get(ctx, leaseKey, existing); err == nil {
 		if existing.Spec.LeaseDurationSeconds != nil && existing.Spec.RenewTime != nil {
 			expiry := existing.Spec.RenewTime.Add(time.Duration(*existing.Spec.LeaseDurationSeconds) * time.Second)
 			if metav1.Now().After(expiry) {
-				if delErr := r.Delete(ctx, existing); delErr != nil && !apierrors.IsNotFound(delErr) {
-					return false, delErr
+				if delErr := c.Delete(ctx, existing, client.Preconditions{UID: &existing.UID, ResourceVersion: &existing.ResourceVersion}); delErr != nil && !apierrors.IsNotFound(delErr) {
+					return nil, delErr
 				}
 			} else {
-				return false, nil
+				return nil, nil
 			}
 		} else {
-			return false, nil
+			return nil, nil
 		}
+	} else if !apierrors.IsNotFound(err) {
+		return nil, err
 	}
 
 	lease := &coordinationv1.Lease{
@@ -55,73 +57,90 @@ func (r *EphemeralEnvironmentReconciler) acquireProvisionLease(ctx context.Conte
 			Namespace: scNamespace,
 		},
 		Spec: coordinationv1.LeaseSpec{
-			HolderIdentity:       &holderEnvName,
+			HolderIdentity:       &holder,
 			LeaseDurationSeconds: &leaseDuration,
 			AcquireTime:          &now,
 			RenewTime:            &now,
 		},
 	}
 
-	if err := r.Create(ctx, lease); err != nil {
+	if err := c.Create(ctx, lease); err != nil {
 		if apierrors.IsAlreadyExists(err) {
-			return false, nil
+			return nil, nil
 		}
-		return false, err
+		return nil, err
 	}
 
-	return true, nil
+	return lease, nil
 }
 
-func (r *EphemeralEnvironmentReconciler) releaseProvisionLease(ctx context.Context, scName, scNamespace string) {
-	lease := &coordinationv1.Lease{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "petri-provision-" + scName,
-			Namespace: scNamespace,
-		},
-	}
-	if err := client.IgnoreNotFound(r.Delete(ctx, lease)); err != nil {
-		logf.FromContext(ctx).Error(err, "failed to release provision lease, TTL will expire it", "lease", "petri-provision-"+scName)
+func releaseProvisionLease(ctx context.Context, c client.Client, lease *coordinationv1.Lease) {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	if err := client.IgnoreNotFound(c.Delete(ctx, lease, client.Preconditions{UID: &lease.UID, ResourceVersion: &lease.ResourceVersion})); err != nil {
+		logf.FromContext(ctx).Error(err, "failed to release provision lease, TTL will expire it", "lease", lease.Name)
 	}
 }
 
-func (r *EphemeralEnvironmentReconciler) submitShared(ctx context.Context, env *v1alpha1.EphemeralEnvironment, targetNs string, component v1alpha1.ComponentSpec) error {
-	sc := new(v1alpha1.SharedComponent)
-	if err := r.Get(ctx, client.ObjectKey{Name: component.SharedComponentRef, Namespace: env.Namespace}, sc); err != nil {
-		return fmt.Errorf("get shared component %q: %w", component.SharedComponentRef, err)
+func (r *EphemeralEnvironmentReconciler) registerConsumer(ctx context.Context, env *v1alpha1.EphemeralEnvironment, targetNs string, sc *v1alpha1.SharedComponent) error {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	reader := r.namespaceReader()
+	key := client.ObjectKeyFromObject(sc)
+	lease, err := acquireProvisionLease(ctx, r.Client, reader, sc.Name, sc.Namespace, env.Name)
+	if err != nil {
+		return err
 	}
 
-	scp := new(v1alpha1.SharedComponentProvider)
-	if err := r.Get(ctx, client.ObjectKey{Name: sc.Spec.Provider, Namespace: env.Namespace}, scp); err != nil {
-		return fmt.Errorf("got provider %q: %w", sc.Spec.Provider, err)
-	}
-
-	if !sc.Status.Ready {
+	if lease == nil {
 		return errSharedNotReady
 	}
+	defer releaseProvisionLease(ctx, r.Client, lease)
 
+	if err := reader.Get(ctx, key, sc); err != nil {
+		return err
+	}
+	if !sc.DeletionTimestamp.IsZero() || !sc.Status.Ready {
+		return errSharedNotReady
+	}
 	if sc.Spec.MaxConsumers > 0 {
 		already, err := r.isConsumer(ctx, targetNs, sc.Name)
 		if err != nil {
 			return err
 		}
 		if !already {
-			acquired, err := r.acquireProvisionLease(ctx, sc.Name, sc.Namespace, env.Name)
-			if err != nil {
-				return err
-			}
-			if !acquired {
-				return errSharedNotReady
-			}
-			defer r.releaseProvisionLease(ctx, sc.Name, sc.Namespace)
-
 			nsList := &corev1.NamespaceList{}
-			if err := r.List(ctx, nsList, client.MatchingLabels{sharedLabel(sc.Name): "true"}); err != nil {
+			if err := reader.List(ctx, nsList, client.MatchingLabels{sharedLabel(sc.Name): "true"}); err != nil {
 				return err
 			}
 			if len(nsList.Items) >= int(sc.Spec.MaxConsumers) {
 				return errAtCapacity
 			}
 		}
+	}
+	uid := sc.UID
+	if err := r.labelConsumer(ctx, targetNs, sc.Name); err != nil {
+		return err
+	}
+
+	if err := reader.Get(ctx, key, sc); err != nil {
+		return err
+	}
+	if sc.UID != uid || !sc.DeletionTimestamp.IsZero() || !sc.Status.Ready {
+		return errSharedNotReady
+	}
+	return ctx.Err()
+}
+
+func (r *EphemeralEnvironmentReconciler) submitShared(ctx context.Context, env *v1alpha1.EphemeralEnvironment, targetNs string, component v1alpha1.ComponentSpec) error {
+	sc := &v1alpha1.SharedComponent{ObjectMeta: metav1.ObjectMeta{Name: component.SharedComponentRef, Namespace: env.Namespace}}
+	if err := r.registerConsumer(ctx, env, targetNs, sc); err != nil {
+		return err
+	}
+	scp := new(v1alpha1.SharedComponentProvider)
+	if err := r.Get(ctx, client.ObjectKey{Name: sc.Spec.Provider, Namespace: env.Namespace}, scp); err != nil {
+		return fmt.Errorf("get provider %q: %w", sc.Spec.Provider, err)
 	}
 
 	bindingName := env.Name + "-" + component.Name + "-binding"
@@ -173,9 +192,6 @@ func (r *EphemeralEnvironmentReconciler) submitShared(ctx context.Context, env *
 	}
 
 	if scp.Spec.Provision == nil {
-		if err := r.labelConsumer(ctx, targetNs, sc.Name); err != nil {
-			return err
-		}
 		setComponentPhase(env, component.Name, v1alpha1.PhaseReady)
 		setComponentShared(env, component.Name)
 		return nil
@@ -195,10 +211,6 @@ func (r *EphemeralEnvironmentReconciler) submitShared(ctx context.Context, env *
 		return err
 	}
 	if err := r.Provisioner.SubmitProvision(ctx, opts); err != nil {
-		return err
-	}
-
-	if err := r.labelConsumer(ctx, targetNs, sc.Name); err != nil {
 		return err
 	}
 
@@ -238,24 +250,23 @@ func renderProvisionOptions(env *v1alpha1.EphemeralEnvironment, component v1alph
 
 func (r *EphemeralEnvironmentReconciler) isConsumer(ctx context.Context, targetNs, sharedName string) (bool, error) {
 	ns := new(corev1.Namespace)
-	if err := r.Get(ctx, client.ObjectKey{Name: targetNs}, ns); err != nil {
+	if err := r.namespaceReader().Get(ctx, client.ObjectKey{Name: targetNs}, ns); err != nil {
 		return false, err
 	}
 
-	_, ok := ns.Labels[sharedLabel(sharedName)]
-	return ok, nil
+	return ns.Labels[sharedLabel(sharedName)] == "true", nil
 }
 
 func (r *EphemeralEnvironmentReconciler) labelConsumer(ctx context.Context, targetNs, sharedName string) error {
 	ns := new(corev1.Namespace)
-	if err := r.Get(ctx, client.ObjectKey{Name: targetNs}, ns); err != nil {
+	if err := r.namespaceReader().Get(ctx, client.ObjectKey{Name: targetNs}, ns); err != nil {
 		return err
 	}
 	label := sharedLabel(sharedName)
 	if ns.Labels[label] == "true" {
 		return nil
 	}
-	patch := client.MergeFrom(ns.DeepCopy())
+	patch := client.MergeFromWithOptions(ns.DeepCopy(), client.MergeFromWithOptimisticLock{})
 	if ns.Labels == nil {
 		ns.Labels = map[string]string{}
 	}

@@ -91,9 +91,9 @@ func TestSharedUninstallLiveBarrier(t *testing.T) {
 		t.Run(state, func(t *testing.T) {
 			t.Parallel()
 			g := NewWithT(t)
-			r, _ := namespaceFixture(t)
-			live := fake.NewClientBuilder().WithScheme(r.Client.Scheme()).Build()
-			sc := &v1alpha1.SharedComponent{ObjectMeta: metav1.ObjectMeta{Name: "db", Finalizers: []string{sharedFinalizer}}}
+			live, cached, sc, _ := sharedAdmissionClients(t, 0)
+			g.Expect(live.Delete(t.Context(), sc)).To(Succeed())
+			g.Expect(live.Get(t.Context(), client.ObjectKeyFromObject(sc), sc)).To(Succeed())
 			job := &batchv1.Job{ObjectMeta: metav1.ObjectMeta{Name: deployer.DeployJobName("shared-db"), Namespace: sharedNamespace}}
 			if state == "terminal" || state == "deleting" {
 				job.Status.Conditions = []batchv1.JobCondition{{Type: batchv1.JobComplete, Status: corev1.ConditionTrue}}
@@ -108,7 +108,7 @@ func TestSharedUninstallLiveBarrier(t *testing.T) {
 				g.Expect(live.Delete(t.Context(), job)).To(Succeed())
 			}
 			fd := newFakeDeployer()
-			sr := &SharedComponentReconciler{Client: r.Client, APIReader: live, Deployer: fd}
+			sr := &SharedComponentReconciler{Client: cached, APIReader: live, Deployer: fd}
 			_, err := sr.reconcileDelete(t.Context(), sc)
 			g.Expect(err).NotTo(HaveOccurred())
 			if state == "running" || state == "deleting" {
