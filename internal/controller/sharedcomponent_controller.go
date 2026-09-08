@@ -22,6 +22,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"time"
 
 	"github.com/petri-dev/petri-operator/api/v1alpha1"
 	"github.com/petri-dev/petri-operator/internal/deployer"
@@ -188,7 +189,11 @@ func (r *SharedComponentReconciler) reconcile(ctx context.Context, sc *v1alpha1.
 		})
 	}
 
-	sc.Status.Consumers = r.countConsumers(ctx, sc.Name)
+	consumers, err := r.countConsumers(ctx, sc.Name)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	sc.Status.Consumers = consumers
 	return ctrl.Result{RequeueAfter: requeueAfter}, nil
 }
 
@@ -235,15 +240,47 @@ func (r *SharedComponentReconciler) ensureInstanceSecret(ctx context.Context, sp
 	})
 }
 
-func (r *SharedComponentReconciler) countConsumers(ctx context.Context, name string) int {
-	nsList := &corev1.NamespaceList{}
-	if err := r.List(ctx, nsList, client.MatchingLabels{sharedLabel(name): "true"}); err != nil {
-		return 0
+func (r *SharedComponentReconciler) countConsumers(ctx context.Context, name string) (int, error) {
+	reader := r.APIReader
+	if reader == nil {
+		reader = r.Client
 	}
-	return len(nsList.Items)
+	nsList := &corev1.NamespaceList{}
+	if err := reader.List(ctx, nsList, client.MatchingLabels{sharedLabel(name): "true"}); err != nil {
+		return 0, err
+	}
+	return len(nsList.Items), nil
 }
 
 const uninstallRetriesAnnotation = "petri.run/uninstall-retries"
+
+// The deletion timestamp is the permanent admission barrier. Drain registration
+// under its lease, then release it before waiting for any teardown Jobs.
+func (r *SharedComponentReconciler) consumersDrained(ctx context.Context, sc *v1alpha1.SharedComponent) (bool, error) {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	reader := r.APIReader
+	if reader == nil {
+		reader = r.Client
+	}
+	lease, err := acquireProvisionLease(ctx, r.Client, reader, sc.Name, sc.Namespace, "shared-component-deletion")
+	if err != nil || lease == nil {
+		return false, err
+	}
+	defer releaseProvisionLease(ctx, r.Client, lease)
+	uid := sc.UID
+	if err := reader.Get(ctx, client.ObjectKeyFromObject(sc), sc); err != nil {
+		return false, err
+	}
+	if sc.UID != uid || sc.DeletionTimestamp.IsZero() {
+		return false, nil
+	}
+	consumers, err := r.countConsumers(ctx, sc.Name)
+	if err != nil {
+		return false, err
+	}
+	return consumers == 0, ctx.Err()
+}
 
 func (r *SharedComponentReconciler) reconcileDelete(ctx context.Context, sc *v1alpha1.SharedComponent) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
@@ -252,8 +289,10 @@ func (r *SharedComponentReconciler) reconcileDelete(ctx context.Context, sc *v1a
 		return ctrl.Result{}, nil
 	}
 
-	if consumers := r.countConsumers(ctx, sc.Name); consumers > 0 {
-		log.Info("shared component still in use, deferring teardown", "consumers", consumers)
+	if drained, err := r.consumersDrained(ctx, sc); err != nil {
+		return ctrl.Result{}, err
+	} else if !drained {
+		log.Info("shared component admission or consumers still active, deferring teardown")
 		return ctrl.Result{RequeueAfter: requeueAfter}, nil
 	}
 
