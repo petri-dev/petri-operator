@@ -59,9 +59,10 @@ const (
 	// observed at once, per level.
 	deployConcurrency = 4
 
-	nsPrefix       = "petri-env-"
-	ownerUIDLabel  = "petri.run/environment-uid"
-	namespaceBound = "NamespaceBound"
+	nsPrefix        = "petri-env-"
+	ownerUIDLabel   = "petri.run/environment-uid"
+	namespaceBound  = "NamespaceBound"
+	cleanupComplete = "CleanupComplete"
 
 	deployerRoleBinding = "petri-deployer"
 )
@@ -333,9 +334,19 @@ func (r *EphemeralEnvironmentReconciler) reconcile(ctx context.Context, env *v1a
 func (r *EphemeralEnvironmentReconciler) reconcileDelete(ctx context.Context, env *v1alpha1.EphemeralEnvironment) (res ctrl.Result, err error) {
 	oldPhase := env.Status.Phase
 
+	original := env.DeepCopy()
 	patcher := helpers.NewStatusPatcher(r.Client, env)
 	defer func() {
-		if patchErr := patcher.Patch(ctx, env); patchErr != nil {
+		if !controllerutil.ContainsFinalizer(env, finalizer) {
+			return
+		}
+		var patchErr error
+		if !meta.IsStatusConditionTrue(original.Status.Conditions, cleanupComplete) && meta.IsStatusConditionTrue(env.Status.Conditions, cleanupComplete) {
+			patchErr = r.Status().Patch(ctx, env, client.MergeFromWithOptions(original, client.MergeFromWithOptimisticLock{}))
+		} else {
+			patchErr = patcher.Patch(ctx, env)
+		}
+		if patchErr != nil {
 			err = errors.Join(err, patchErr)
 			return
 		}
@@ -356,6 +367,9 @@ func (r *EphemeralEnvironmentReconciler) reconcileDelete(ctx context.Context, en
 	ns := new(corev1.Namespace)
 	if err := r.namespaceReader().Get(ctx, client.ObjectKey{Name: targetNs}, ns); err != nil {
 		if apierrors.IsNotFound(err) {
+			if meta.IsStatusConditionTrue(env.Status.Conditions, cleanupComplete) {
+				return ctrl.Result{}, r.removeFinalizer(ctx, env)
+			}
 			if meta.IsStatusConditionTrue(env.Status.Conditions, namespaceBound) {
 				return ctrl.Result{}, r.setFailed(env, "NamespaceNotManaged", "bound namespace is missing; admin cleanup of external allocations is required")
 			}
@@ -367,6 +381,15 @@ func (r *EphemeralEnvironmentReconciler) reconcileDelete(ctx context.Context, en
 		log.Info("namespace not owned by environment, skipping all cleanup", "namespace", targetNs)
 		if meta.IsStatusConditionTrue(env.Status.Conditions, namespaceBound) {
 			return ctrl.Result{}, r.setFailed(env, "NamespaceNotManaged", "bound namespace ownership changed; admin cleanup is required")
+		}
+		return ctrl.Result{}, r.removeFinalizer(ctx, env)
+	}
+
+	if meta.IsStatusConditionTrue(env.Status.Conditions, cleanupComplete) {
+		if err := client.IgnoreNotFound(r.Delete(ctx, ns, client.Preconditions{
+			UID: &ns.UID, ResourceVersion: &ns.ResourceVersion,
+		})); err != nil {
+			return ctrl.Result{}, err
 		}
 		return ctrl.Result{}, r.removeFinalizer(ctx, env)
 	}
@@ -405,13 +428,11 @@ func (r *EphemeralEnvironmentReconciler) reconcileDelete(ctx context.Context, en
 		log.Info("deprovision shared complete")
 	}
 
-	if err := client.IgnoreNotFound(r.Delete(ctx, ns, client.Preconditions{
-		UID: &ns.UID, ResourceVersion: &ns.ResourceVersion,
-	})); err != nil {
-		return ctrl.Result{}, err
-	}
-
-	return ctrl.Result{}, r.removeFinalizer(ctx, env)
+	meta.SetStatusCondition(&env.Status.Conditions, metav1.Condition{
+		Type: cleanupComplete, Status: metav1.ConditionTrue, Reason: "CleanupFinished",
+		Message: "Environment cleanup finished; target namespace can be deleted", ObservedGeneration: env.Generation,
+	})
+	return ctrl.Result{RequeueAfter: requeueImmediate}, nil
 }
 
 func (r *EphemeralEnvironmentReconciler) deprovisionShared(ctx context.Context, env *v1alpha1.EphemeralEnvironment, targetNs string, template *v1alpha1.EnvironmentTemplate) (done bool, res ctrl.Result, err error) {
@@ -480,7 +501,18 @@ func (r *EphemeralEnvironmentReconciler) deprovisionShared(ctx context.Context, 
 			return false, ctrl.Result{}, err
 		}
 
-		opts, err := renderProvisionOptions(env, component, sc, scp.Spec.Deprovision, genSecret, nil)
+		instance := map[string]string{}
+		if scp.Spec.InstanceSecret != nil {
+			secret := new(corev1.Secret)
+			if err := r.Get(ctx, client.ObjectKey{Name: scp.Spec.InstanceSecret.Name, Namespace: sharedNamespace}, secret); err != nil {
+				return false, ctrl.Result{}, err
+			}
+			for k, v := range secret.Data {
+				instance[k] = string(v)
+			}
+		}
+
+		opts, err := renderProvisionOptions(env, component, sc, scp.Spec.Deprovision, genSecret, instance)
 		if err != nil {
 			return false, ctrl.Result{}, err
 		}

@@ -36,11 +36,13 @@ func namespaceFixture(t *testing.T) (*EphemeralEnvironmentReconciler, *v1alpha1.
 	g.Expect(batchv1.AddToScheme(s)).To(Succeed())
 	g.Expect(rbacv1.AddToScheme(s)).To(Succeed())
 	g.Expect(v1alpha1.AddToScheme(s)).To(Succeed())
+
 	env := &v1alpha1.EphemeralEnvironment{
 		ObjectMeta: metav1.ObjectMeta{Name: "shared", Namespace: "control", UID: "12345678-1234-1234-1234-123456789abc", Finalizers: []string{finalizer}},
 		Spec:       v1alpha1.EphemeralEnvironmentSpec{Template: "template"},
 	}
 	tmpl := &v1alpha1.EnvironmentTemplate{ObjectMeta: metav1.ObjectMeta{Name: "template", Namespace: env.Namespace}}
+
 	c := fake.NewClientBuilder().WithScheme(s).WithStatusSubresource(env).WithObjects(env, tmpl).Build()
 	return &EphemeralEnvironmentReconciler{Client: c}, env
 }
@@ -48,6 +50,7 @@ func namespaceFixture(t *testing.T) (*EphemeralEnvironmentReconciler, *v1alpha1.
 func namespaceStep(t *testing.T, r *EphemeralEnvironmentReconciler, env *v1alpha1.EphemeralEnvironment) {
 	t.Helper()
 	g := NewWithT(t)
+
 	_, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(env)})
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(r.Get(t.Context(), client.ObjectKeyFromObject(env), env)).To(Succeed())
@@ -67,25 +70,32 @@ func TestNamespaceAllocation(t *testing.T) {
 	} {
 		g.Expect(r.Create(t.Context(), &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: name, Labels: labels}})).To(Succeed())
 	}
+
 	namespaceStep(t, r, env)
 	g.Expect(env.Status.TargetNamespace).To(Equal(nsPrefix + digest[:16]))
+
 	ns := new(corev1.Namespace)
 	g.Expect(apierrors.IsNotFound(r.Get(t.Context(), client.ObjectKey{Name: env.Status.TargetNamespace}, ns))).To(BeTrue())
 	// A fresh reconciler must resume from the persisted assignment, not the shortest free name.
 	g.Expect(r.Delete(t.Context(), &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: short}})).To(Succeed())
+
 	r = &EphemeralEnvironmentReconciler{Client: r.Client}
 	namespaceStep(t, r, env)
 	g.Expect(env.Status.TargetNamespace).To(Equal(nsPrefix + digest[:16]))
 	g.Expect(meta.IsStatusConditionTrue(env.Status.Conditions, namespaceBound)).To(BeTrue())
 	g.Expect(r.Get(t.Context(), client.ObjectKey{Name: env.Status.TargetNamespace}, ns)).To(Succeed())
 	g.Expect(ns.Labels[ownerUIDLabel]).To(Equal(string(env.UID)))
+
 	namespaceStep(t, r, env)
 	g.Expect(env.Status.Phase).To(Equal(v1alpha1.EnvironmentPhaseReady))
+
 	// A generation reset must not permit moving an already-bound assignment.
 	ns.Labels[ownerUIDLabel] = "replacement-owner"
 	g.Expect(r.Update(t.Context(), ns)).To(Succeed())
+
 	env.Generation++
 	g.Expect(r.Update(t.Context(), env)).To(Succeed())
+
 	namespaceStep(t, r, env)
 	g.Expect(env.Status.TargetNamespace).To(Equal(nsPrefix + digest[:16]))
 	g.Expect(failureReason(env)).To(Equal("NamespaceNotManaged"))
@@ -161,6 +171,10 @@ func TestNamespaceDeleteGuard(t *testing.T) {
 				}})).To(Succeed())
 			}
 			g.Expect(r.Delete(t.Context(), env)).To(Succeed())
+			if owner == string(env.UID) {
+				namespaceStep(t, r, env)
+				g.Expect(meta.IsStatusConditionTrue(env.Status.Conditions, cleanupComplete)).To(BeTrue())
+			}
 			_, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(env)})
 			g.Expect(err).NotTo(HaveOccurred())
 			g.Expect(apierrors.IsNotFound(r.Get(t.Context(), client.ObjectKeyFromObject(env), env))).To(BeTrue())
@@ -173,6 +187,117 @@ func TestNamespaceDeleteGuard(t *testing.T) {
 				g.Expect(r.List(t.Context(), accounts)).To(Succeed())
 				g.Expect(accounts.Items).To(BeEmpty())
 			}
+		})
+	}
+}
+
+func TestNamespaceCleanupRecovery(t *testing.T) {
+	t.Parallel()
+	for _, mode := range []string{"deleted", "terminating", "foreign", "delete-race", "checkpoint-error", "checkpoint-conflict"} {
+		t.Run(mode, func(t *testing.T) {
+			t.Parallel()
+			g := NewWithT(t)
+			r, env := namespaceFixture(t)
+			namespaceStep(t, r, env)
+			namespaceStep(t, r, env)
+			g.Expect(r.Delete(t.Context(), env)).To(Succeed())
+			base := r.Client.(client.WithWatch)
+			failure := errors.New("injected patch failure")
+			deletes := 0
+			r.Client = interceptor.NewClient(base, interceptor.Funcs{
+				SubResourcePatch: func(ctx context.Context, c client.Client, sub string, obj client.Object, patch client.Patch, opts ...client.SubResourcePatchOption) error {
+					if mode == "checkpoint-error" {
+						return failure
+					}
+					if mode == "checkpoint-conflict" {
+						current := new(v1alpha1.EphemeralEnvironment)
+						g.Expect(c.Get(ctx, client.ObjectKeyFromObject(env), current)).To(Succeed())
+						current.Annotations = map[string]string{"concurrent": "write"}
+						g.Expect(c.Update(ctx, current)).To(Succeed())
+					}
+					return c.SubResource(sub).Patch(ctx, obj, patch, opts...)
+				},
+				Delete: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.DeleteOption) error {
+					if _, ok := obj.(*corev1.Namespace); ok {
+						deletes++
+					}
+					return c.Delete(ctx, obj, opts...)
+				},
+			})
+			req := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(env)}
+			res, err := r.Reconcile(t.Context(), req)
+			g.Expect(deletes).To(BeZero())
+			g.Expect(base.Get(t.Context(), req.NamespacedName, env)).To(Succeed())
+			ns := new(corev1.Namespace)
+			g.Expect(base.Get(t.Context(), client.ObjectKey{Name: env.Status.TargetNamespace}, ns)).To(Succeed())
+			if mode == "checkpoint-error" || mode == "checkpoint-conflict" {
+				g.Expect(err).To(HaveOccurred())
+				g.Expect(meta.IsStatusConditionTrue(env.Status.Conditions, cleanupComplete)).To(BeFalse())
+				g.Expect(env.Finalizers).To(ContainElement(finalizer))
+				return
+			}
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(res.RequeueAfter).To(BeNumerically(">", 0))
+			g.Expect(meta.IsStatusConditionTrue(env.Status.Conditions, cleanupComplete)).To(BeTrue())
+			// A changed template and nil workers make repeated cleanup fail after restart.
+			tmpl := new(v1alpha1.EnvironmentTemplate)
+			g.Expect(base.Get(t.Context(), client.ObjectKey{Name: env.Spec.Template, Namespace: env.Namespace}, tmpl)).To(Succeed())
+			tmpl.Spec.Components = []v1alpha1.ComponentSpec{{Name: "app", Helm: helmSpec()}}
+			g.Expect(base.Update(t.Context(), tmpl)).To(Succeed())
+			if mode == "terminating" {
+				ns.Finalizers = []string{"test/hold"}
+				g.Expect(base.Update(t.Context(), ns)).To(Succeed())
+			}
+			if mode == "foreign" {
+				ns.Labels[ownerUIDLabel] = "foreign"
+				g.Expect(base.Update(t.Context(), ns)).To(Succeed())
+			}
+			faults := interceptor.NewClient(base, interceptor.Funcs{
+				Patch: func(context.Context, client.WithWatch, client.Object, client.Patch, ...client.PatchOption) error {
+					return failure
+				},
+				SubResourcePatch: func(ctx context.Context, c client.Client, sub string, obj client.Object, patch client.Patch, opts ...client.SubResourcePatchOption) error {
+					g.Expect(mode).To(Or(Equal("foreign"), Equal("delete-race")))
+					return c.SubResource(sub).Patch(ctx, obj, patch, opts...)
+				},
+				Delete: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.DeleteOption) error {
+					deletes++
+					options := (&client.DeleteOptions{}).ApplyOptions(opts)
+					g.Expect(options.Preconditions).NotTo(BeNil())
+					g.Expect(*options.Preconditions.UID).To(Equal(ns.UID))
+					g.Expect(*options.Preconditions.ResourceVersion).To(Equal(ns.ResourceVersion))
+					if mode == "delete-race" {
+						ns.Labels[ownerUIDLabel] = "foreign"
+						g.Expect(c.Update(ctx, ns)).To(Succeed())
+					}
+					return c.Delete(ctx, obj, opts...)
+				},
+			})
+			r = &EphemeralEnvironmentReconciler{Client: faults, APIReader: base}
+			_, err = r.Reconcile(t.Context(), req)
+			g.Expect(base.Get(t.Context(), req.NamespacedName, env)).To(Succeed())
+			g.Expect(env.Finalizers).To(ContainElement(finalizer))
+			if mode == "foreign" || mode == "delete-race" {
+				g.Expect(base.Get(t.Context(), client.ObjectKeyFromObject(ns), ns)).To(Succeed())
+				g.Expect(ns.DeletionTimestamp.IsZero()).To(BeTrue())
+				if mode == "foreign" {
+					g.Expect(deletes).To(BeZero())
+				} else {
+					g.Expect(apierrors.IsConflict(err)).To(BeTrue())
+				}
+				return
+			}
+			g.Expect(err).To(MatchError(failure))
+			if mode == "deleted" {
+				g.Expect(apierrors.IsNotFound(base.Get(t.Context(), client.ObjectKeyFromObject(ns), ns))).To(BeTrue())
+			} else {
+				g.Expect(base.Get(t.Context(), client.ObjectKeyFromObject(ns), ns)).To(Succeed())
+				g.Expect(ns.DeletionTimestamp.IsZero()).To(BeFalse())
+			}
+			r = &EphemeralEnvironmentReconciler{Client: base, APIReader: base}
+			_, err = r.Reconcile(t.Context(), req)
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(apierrors.IsNotFound(base.Get(t.Context(), req.NamespacedName, env))).To(BeTrue())
 		})
 	}
 }
