@@ -2,6 +2,9 @@ package provisioner
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/json"
+	"fmt"
 	"time"
 
 	"github.com/petri-dev/petri-operator/internal/deployer"
@@ -60,29 +63,51 @@ func (p *JobProvisioner) ObserveDeprovision(ctx context.Context, opts ProvisionO
 
 func (p *JobProvisioner) submit(ctx context.Context, opts ProvisionOptions, op string) error {
 	name := jobName(op, opts.EnvName, opts.ComponentName)
+	identity, err := payloadIdentity(opts)
+	if err != nil {
+		return err
+	}
 
 	existing := &batchv1.Job{}
-	failed := false
-	err := p.Client.Get(ctx, client.ObjectKey{Namespace: sharedNamespace, Name: name}, existing)
+	err = p.Client.Get(ctx, client.ObjectKey{Namespace: sharedNamespace, Name: name}, existing)
 	if err == nil {
-		for _, c := range existing.Status.Conditions {
-			if c.Type == batchv1.JobFailed && c.Status == corev1.ConditionTrue {
-				failed = true
-				if delErr := p.Client.Delete(ctx, existing, client.PropagationPolicy(metav1.DeletePropagationBackground)); delErr != nil && !apierrors.IsNotFound(delErr) {
-					return delErr
-				}
-				break
-			}
-		}
-
-		if !failed {
+		phase := deployer.TerminalPhase(existing)
+		if !existing.DeletionTimestamp.IsZero() || phase == deployer.RunningJobPhase ||
+			(phase == deployer.SucceededJobPhase && existing.Annotations[payloadAnnotation] == identity) {
 			return nil
 		}
+		live := new(batchv1.Job)
+		if err := p.Reader.Get(ctx, client.ObjectKeyFromObject(existing), live); err != nil {
+			return client.IgnoreNotFound(err)
+		}
+		if live.UID != existing.UID || !live.DeletionTimestamp.IsZero() || deployer.TerminalPhase(live) == deployer.RunningJobPhase ||
+			(deployer.TerminalPhase(live) == deployer.SucceededJobPhase && live.Annotations[payloadAnnotation] == identity) {
+			return nil
+		}
+		err := p.Client.Delete(ctx, live,
+			client.Preconditions{UID: &existing.UID},
+			client.PropagationPolicy(metav1.DeletePropagationForeground))
+		if apierrors.IsConflict(err) {
+			return nil
+		}
+		return client.IgnoreNotFound(err)
 	} else if !apierrors.IsNotFound(err) {
 		return err
 	}
 
-	return p.Client.Create(ctx, p.buildJob(opts, op, name))
+	job := p.buildJob(opts, op, name)
+	job.Annotations = map[string]string{payloadAnnotation: identity}
+	err = p.Client.Create(ctx, job)
+	if apierrors.IsAlreadyExists(err) {
+		if err := p.Reader.Get(ctx, client.ObjectKeyFromObject(job), existing); err != nil {
+			return client.IgnoreNotFound(err)
+		}
+		if existing.Labels["petri.run/managed"] != "true" {
+			return fmt.Errorf("job %s/%s already exists and is not managed by Petri", job.Namespace, job.Name)
+		}
+		return nil
+	}
+	return err
 }
 
 func (p *JobProvisioner) observe(ctx context.Context, opts ProvisionOptions, op string) (deployer.JobState, error) {
@@ -97,22 +122,41 @@ func (p *JobProvisioner) observe(ctx context.Context, opts ProvisionOptions, op 
 		return deployer.JobState{}, err
 	}
 
-	if job.Status.Succeeded > 0 {
-		return deployer.JobState{Phase: deployer.SucceededJobPhase}, nil
+	if !job.DeletionTimestamp.IsZero() {
+		return deployer.JobState{Phase: deployer.PendingJobPhase}, nil
 	}
-	if isFailed(job) {
+	phase := deployer.TerminalPhase(job)
+	if phase == deployer.RunningJobPhase {
+		return deployer.JobState{Phase: phase}, nil
+	}
+	identity, err := payloadIdentity(opts)
+	if err != nil {
+		return deployer.JobState{}, err
+	}
+	if job.Annotations[payloadAnnotation] != identity {
+		return deployer.JobState{Phase: deployer.PendingJobPhase}, nil
+	}
+	live := new(batchv1.Job)
+	if err := p.Reader.Get(ctx, client.ObjectKeyFromObject(job), live); err != nil {
+		return deployer.JobState{Phase: deployer.PendingJobPhase}, client.IgnoreNotFound(err)
+	}
+	if live.UID != job.UID || !live.DeletionTimestamp.IsZero() || deployer.TerminalPhase(live) != phase || live.Annotations[payloadAnnotation] != identity {
+		return deployer.JobState{Phase: deployer.PendingJobPhase}, nil
+	}
+	if phase == deployer.FailedJobPhase {
 		return deployer.JobState{Phase: deployer.FailedJobPhase, Reason: p.failureReason(ctx, name)}, nil
 	}
-	return deployer.JobState{Phase: deployer.RunningJobPhase}, nil
+	return deployer.JobState{Phase: phase}, nil
 }
 
-func isFailed(job *batchv1.Job) bool {
-	for _, c := range job.Status.Conditions {
-		if c.Type == batchv1.JobFailed && c.Status == corev1.ConditionTrue {
-			return true
-		}
+const payloadAnnotation = "petri.run/payload"
+
+func payloadIdentity(opts ProvisionOptions) (string, error) {
+	payload, err := json.Marshal(opts)
+	if err != nil {
+		return "", err
 	}
-	return false
+	return fmt.Sprintf("%x", sha256.Sum256(payload)), nil
 }
 
 func (p *JobProvisioner) failureReason(ctx context.Context, name string) string {

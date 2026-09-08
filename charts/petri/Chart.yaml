@@ -1,0 +1,9 @@
+apiVersion: v2
+name: petri
+description: Kubernetes operator for isolated, short-lived environments
+type: application
+version: 0.0.0-dev
+appVersion: "v0.0.0-dev"
+home: https://github.com/petri-dev/petri-operator
+sources:
+  - https://github.com/petri-dev/petri-operator

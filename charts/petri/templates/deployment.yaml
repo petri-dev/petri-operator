@@ -1,0 +1,97 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-controller-manager
+  namespace: {{ .Release.Namespace }}
+  labels:
+    control-plane: controller-manager
+    {{- include "petri.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.operator.replicas }}
+  selector:
+    matchLabels:
+      control-plane: controller-manager
+      app.kubernetes.io/name: petri
+  template:
+    metadata:
+      annotations:
+        kubectl.kubernetes.io/default-container: manager
+        checksum/config: {{ toYaml .Values.operatorConfig | sha256sum }}
+      labels:
+        control-plane: controller-manager
+        app.kubernetes.io/name: petri
+    spec:
+      serviceAccountName: {{ .Values.serviceAccount.name }}
+      terminationGracePeriodSeconds: 10
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.operator.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.operator.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.operator.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: manager
+          image: {{ include "petri.operatorImage" . }}
+          imagePullPolicy: {{ .Values.operator.image.pullPolicy }}
+          command:
+            - /app
+          args:
+            - --config=/etc/petri/config.yaml
+            - --health-probe-bind-address=:8081
+            {{- if .Values.metrics.enabled }}
+            - --metrics-bind-address=:8443
+            {{- end }}
+          env:
+            - name: PETRI_DEPLOYER_IMAGE
+              value: {{ include "petri.deployerImage" . }}
+          ports:
+            - containerPort: 8081
+              name: health
+              protocol: TCP
+            {{- if .Values.metrics.enabled }}
+            - containerPort: 8443
+              name: https
+              protocol: TCP
+            {{- end }}
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8081
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8081
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          securityContext:
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - "ALL"
+          volumeMounts:
+            - name: config
+              mountPath: /etc/petri
+              readOnly: true
+          resources:
+            {{- toYaml .Values.operator.resources | nindent 12 }}
+      volumes:
+        - name: config
+          configMap:
+            name: {{ .Release.Name }}-operator-config

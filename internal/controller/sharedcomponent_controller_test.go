@@ -22,10 +22,12 @@ import (
 
 	corev1alpha1 "github.com/petri-dev/petri-operator/api/v1alpha1"
 	"github.com/petri-dev/petri-operator/internal/deployer"
+	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes/scheme"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -34,9 +36,10 @@ import (
 
 func newSCReconciler(fd *fakeDeployer) *SharedComponentReconciler {
 	return &SharedComponentReconciler{
-		Client:   k8sClient,
-		Scheme:   scheme.Scheme,
-		Deployer: fd,
+		Client:    k8sClient,
+		APIReader: k8sClient,
+		Scheme:    scheme.Scheme,
+		Deployer:  fd,
 	}
 }
 
@@ -220,7 +223,7 @@ var _ = Describe("SharedComponent Controller", func() {
 	})
 
 	Context("SC delete with no consumers", func() {
-		It("submits undeploy", func() {
+		It("submits undeploy", func(ctx SpecContext) {
 			fd := newFakeDeployer()
 			r := newSCReconciler(fd)
 
@@ -236,6 +239,23 @@ var _ = Describe("SharedComponent Controller", func() {
 
 			sc := getSC(key)
 			Expect(k8sClient.Delete(tctx, sc)).To(Succeed())
+			job := &batchv1.Job{
+				ObjectMeta: metav1.ObjectMeta{Name: deployer.DeployJobName(releaseName), Namespace: sharedNamespace},
+				Spec: batchv1.JobSpec{Template: corev1.PodTemplateSpec{Spec: corev1.PodSpec{
+					RestartPolicy: corev1.RestartPolicyNever,
+					Containers:    []corev1.Container{{Name: "deployer", Image: "busybox"}},
+				}}},
+			}
+			Expect(k8sClient.Create(tctx, job)).To(Succeed())
+			reconcileSC(r, key, 2)
+			Expect(fd.undeployOrder()).To(BeEmpty())
+			finishJob(ctx, job, batchv1.JobComplete)
+			Expect(k8sClient.Delete(tctx, job, client.PropagationPolicy(metav1.DeletePropagationForeground))).To(Succeed())
+			reconcileSC(r, key, 2)
+			Expect(fd.undeployOrder()).To(BeEmpty())
+			Expect(k8sClient.Get(tctx, client.ObjectKeyFromObject(job), job)).To(Succeed())
+			job.Finalizers = nil // Envtest has no garbage collector.
+			Expect(k8sClient.Update(tctx, job)).To(Succeed())
 
 			for range 10 {
 				_, err := r.Reconcile(tctx, reconcile.Request{NamespacedName: key})

@@ -342,6 +342,10 @@ func (in *EphemeralEnvironmentStatus) DeepCopyInto(out *EphemeralEnvironmentStat
 			(*in)[i].DeepCopyInto(&(*out)[i])
 		}
 	}
+	if in.DeployStartedAt != nil {
+		in, out := &in.DeployStartedAt, &out.DeployStartedAt
+		*out = (*in).DeepCopy()
+	}
 	if in.ExpiresAt != nil {
 		in, out := &in.ExpiresAt, &out.ExpiresAt
 		*out = (*in).DeepCopy()

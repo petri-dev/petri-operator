@@ -45,8 +45,10 @@ help: ## Display this help.
 ##@ Development
 
 .PHONY: manifests
-manifests: controller-gen ## Generate WebhookConfiguration, ClusterRole and CustomResourceDefinition objects.
-	"$(CONTROLLER_GEN)" rbac:roleName=manager-role crd webhook paths="./..." output:crd:artifacts:config=config/crd/bases
+manifests: controller-gen ## Generate CRDs and the manager ClusterRole directly into the Helm chart.
+	"$(CONTROLLER_GEN)" rbac:roleName=manager-role crd webhook paths="./..." \
+		output:crd:dir=charts/petri/_crds \
+		output:rbac:dir=charts/petri/_rbac
 
 .PHONY: generate
 generate: controller-gen ## Generate code containing DeepCopy, DeepCopyInto, and DeepCopyObject method implementations.
@@ -176,55 +178,56 @@ docker-buildx: ## Build and push docker image for the manager for cross-platform
 	- $(CONTAINER_TOOL) buildx rm petri-builder
 	rm Dockerfile.cross
 
+define image-set-flags
+	printf '%s\n' \
+		"--set-string" "operator.image.reference=$(IMG)" \
+		"--set-string" "deployer.image.reference=$(DEPLOYER_IMG)"
+endef
+
+INSTALLER_DIR ?= dist
+
 .PHONY: build-installer
-build-installer: manifests generate kustomize ## Generate a consolidated YAML with CRDs and deployment.
-	mkdir -p dist
-	@tmp="$$(mktemp -d config/.petri-deploy.XXXXXX)"; readonly tmp; \
-	cleanup() { \
-		status=$$?; cleanup_status=0; \
-		unlink "$$tmp/kustomization.yaml" || cleanup_status=$$?; \
-		rmdir "$$tmp" || cleanup_status=$$?; \
-		if [ "$$status" -eq 0 ]; then status=$$cleanup_status; fi; \
-		exit "$$status"; \
-	}; \
-	trap cleanup EXIT; \
-	cp config/deploy/kustomization.yaml "$$tmp/kustomization.yaml"; \
-	( cd "$$tmp" && "$(KUSTOMIZE)" edit set image "petri-operator=${IMG}" && "$(KUSTOMIZE)" edit set configmap deployer-image --from-literal="image=${DEPLOYER_IMG}" ); \
-	"$(KUSTOMIZE)" build "$$tmp" > dist/install.yaml
+build-installer: manifests generate ## Generate a consolidated install YAML (CRDs + operator) from the Helm chart.
+	mkdir -p "$(INSTALLER_DIR)"
+	set -eu; $(call image-set-flags) | xargs $(HELM) template petri charts/petri --namespace petri-system \
+		--set namespace.create=true \
+		> "$(INSTALLER_DIR)/install.yaml"
+
+.PHONY: release-artifacts
+release-artifacts: manifests generate ## Package matched chart, CRDs and installer without publishing. Requires RELEASE_VERSION=vX.Y.Z.
+	HELM="$(HELM)" RELEASE_VERSION="$(RELEASE_VERSION)" bash hack/release-artifacts.sh dist
 
 ##@ Deployment
 
 ifndef ignore-not-found
   ignore-not-found = false
 endif
-KUBECTL_DELETE_FLAGS ?=
+
+HELM_NAMESPACE ?= petri-system
+HELM_RELEASE ?= petri
 
 .PHONY: install
-install: manifests kustomize ## Install CRDs into the K8s cluster specified in ~/.kube/config.
-	"$(KUSTOMIZE)" build config/crd | "$(KUBECTL)" apply -f -
+install: manifests ## Install only the CRDs into the cluster.
+	$(HELM) template petri charts/petri --show-only templates/crds.yaml | $(KUBECTL) apply -f -
 
 .PHONY: uninstall
-uninstall: manifests kustomize ## Uninstall CRDs from the K8s cluster specified in ~/.kube/config. Call with ignore-not-found=true to ignore resource not found errors during deletion.
-	"$(KUSTOMIZE)" build config/crd | "$(KUBECTL)" delete $(KUBECTL_DELETE_FLAGS) --ignore-not-found=$(ignore-not-found) -f -
+uninstall: manifests ## Remove the CRDs from the cluster. Call with ignore-not-found=true to ignore missing resources.
+	$(HELM) template petri charts/petri --show-only templates/crds.yaml | $(KUBECTL) delete --ignore-not-found=$(ignore-not-found) -f -
 
 .PHONY: deploy
-deploy: manifests kustomize ## Deploy controller to the K8s cluster specified in ~/.kube/config.
-	@tmp="$$(mktemp -d config/.petri-deploy.XXXXXX)"; readonly tmp; \
-	cleanup() { \
-		status=$$?; cleanup_status=0; \
-		unlink "$$tmp/kustomization.yaml" || cleanup_status=$$?; \
-		rmdir "$$tmp" || cleanup_status=$$?; \
-		if [ "$$status" -eq 0 ]; then status=$$cleanup_status; fi; \
-		exit "$$status"; \
-	}; \
-	trap cleanup EXIT; \
-	cp config/deploy/kustomization.yaml "$$tmp/kustomization.yaml"; \
-	( cd "$$tmp" && "$(KUSTOMIZE)" edit set image "petri-operator=${IMG}" && "$(KUSTOMIZE)" edit set configmap deployer-image --from-literal="image=${DEPLOYER_IMG}" ); \
-	"$(KUSTOMIZE)" build "$$tmp" | "$(KUBECTL)" apply -f -
+deploy: install ## Deploy the operator via helm. CRDs are managed separately (via `install`, applied with kubectl), so the release is rendered with crds.enabled=false to avoid Helm ownership conflicts. Pass HELM_EXTRA_ARGS for extra --set flags.
+	set -eu; $(call image-set-flags) | xargs $(HELM) upgrade --install $(HELM_RELEASE) charts/petri \
+		--namespace $(HELM_NAMESPACE) --create-namespace --set crds.enabled=false $(HELM_EXTRA_ARGS)
 
 .PHONY: undeploy
-undeploy: kustomize ## Undeploy controller from the K8s cluster specified in ~/.kube/config. Call with ignore-not-found=true to ignore resource not found errors during deletion.
-	"$(KUSTOMIZE)" build config/default | "$(KUBECTL)" delete $(KUBECTL_DELETE_FLAGS) --ignore-not-found=$(ignore-not-found) -f -
+undeploy: ## Uninstall the operator release from the cluster (leaves CRDs in place).
+	$(HELM) uninstall $(HELM_RELEASE) --namespace $(HELM_NAMESPACE) --ignore-not-found
+
+.PHONY: helm-lint
+helm-lint:
+	$(HELM) lint charts/petri
+	$(HELM) template petri charts/petri --namespace petri-system >/dev/null
+	HELM="$(HELM)" bash charts/tests/render.sh
 
 ##@ Dependencies
 
@@ -236,13 +239,12 @@ $(LOCALBIN):
 ## Tool Binaries
 KUBECTL ?= kubectl
 KIND ?= kind
-KUSTOMIZE ?= $(LOCALBIN)/kustomize
+HELM ?= helm
 CONTROLLER_GEN ?= $(LOCALBIN)/controller-gen
 ENVTEST ?= $(LOCALBIN)/setup-envtest
 GOLANGCI_LINT = $(LOCALBIN)/golangci-lint
 
 ## Tool Versions
-KUSTOMIZE_VERSION ?= v5.8.1
 CONTROLLER_TOOLS_VERSION ?= v0.21.0
 
 #ENVTEST_VERSION is the controller-runtime version to use for setup-envtest, derived from go.mod
@@ -256,11 +258,6 @@ ENVTEST_K8S_VERSION ?= $(shell v='$(call gomodver,k8s.io/api)'; \
   printf '%s\n' "$$v" | sed -E 's/^v?[0-9]+\.([0-9]+).*/1.\1/')
 
 GOLANGCI_LINT_VERSION ?= v2.13.2
-.PHONY: kustomize
-kustomize: $(KUSTOMIZE) ## Download kustomize locally if necessary.
-$(KUSTOMIZE): $(LOCALBIN)
-	$(call go-install-tool,$(KUSTOMIZE),sigs.k8s.io/kustomize/kustomize/v5,$(KUSTOMIZE_VERSION))
-
 .PHONY: controller-gen
 controller-gen: $(CONTROLLER_GEN) ## Download controller-gen locally if necessary.
 $(CONTROLLER_GEN): $(LOCALBIN)

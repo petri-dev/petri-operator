@@ -69,6 +69,12 @@ type ComponentStatus struct {
 
 // EphemeralEnvironmentStatus defines the observed state of EphemeralEnvironment.
 type EphemeralEnvironmentStatus struct {
+	// TargetNamespace is persisted before creation and remains stable once NamespaceBound is true.
+	// +optional
+	// +kubebuilder:validation:MaxLength=63
+	// +kubebuilder:validation:Pattern=`^petri-env-[a-f0-9]{8}([a-f0-9]{4}){0,11}$`
+	TargetNamespace string `json:"targetNamespace,omitempty"`
+
 	// +listType=map
 	// +listMapKey=type
 	// +optional
@@ -76,6 +82,10 @@ type EphemeralEnvironmentStatus struct {
 
 	// +kubebuilder:validation:Enum=Pending;Deploying;Ready;Failed;Terminating
 	Phase Phase `json:"phase,omitempty"`
+
+	// DeployStartedAt is the start of the current deployment attempt, reset on spec changes.
+	// +optional
+	DeployStartedAt *metav1.Time `json:"deployStartedAt,omitempty"`
 
 	URL       string       `json:"url,omitempty"`
 	ExpiresAt *metav1.Time `json:"expiresAt,omitempty"`

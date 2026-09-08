@@ -5,6 +5,7 @@ import (
 
 	"github.com/petri-dev/petri-operator/api/v1alpha1"
 	"github.com/petri-dev/petri-operator/internal/deployer"
+	"k8s.io/apimachinery/pkg/types"
 )
 
 type Provisioner interface {
@@ -15,6 +16,7 @@ type Provisioner interface {
 }
 
 type ProvisionOptions struct {
+	EnvUID               types.UID
 	EnvName              string
 	ComponentName        string
 	SharedName           string

@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/petri-dev/petri-operator/api/v1alpha1"
+	"k8s.io/apimachinery/pkg/types"
 )
 
 type JobPhase string
@@ -44,7 +45,9 @@ type JobState struct {
 }
 
 type DeployOptions struct {
+	OwnerUID    types.UID
 	Namespace   string
 	ReleaseName string
 	Component   v1alpha1.ComponentSpec
+	Attempt     int32 `json:",omitempty"`
 }

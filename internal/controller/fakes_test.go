@@ -120,12 +120,15 @@ func (f *fakeDeployer) Observe(_ context.Context, opts deployer.DeployOptions) (
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls = append(f.calls, CallEvent{Op: "observe", ReleaseName: opts.ReleaseName})
+	if !f.submitted[opts.ReleaseName] {
+		return deployer.JobState{Phase: deployer.PendingJobPhase}, nil
+	}
 
 	count := f.observeCount[opts.ReleaseName]
 	f.observeCount[opts.ReleaseName] = count + 1
 
 	if count == 0 {
-		return deployer.JobState{Phase: deployer.PendingJobPhase}, nil
+		return deployer.JobState{Phase: deployer.RunningJobPhase}, nil
 	}
 
 	if st, ok := f.outcome[opts.ReleaseName]; ok {

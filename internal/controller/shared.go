@@ -135,10 +135,11 @@ func (r *EphemeralEnvironmentReconciler) submitShared(ctx context.Context, env *
 	instance := map[string]string{}
 	if scp.Spec.InstanceSecret != nil {
 		is := new(corev1.Secret)
-		if err := r.Get(ctx, client.ObjectKey{Name: scp.Spec.InstanceSecret.Name, Namespace: sharedNamespace}, is); err == nil {
-			for k, v := range is.Data {
-				instance[k] = string(v)
-			}
+		if err := r.Get(ctx, client.ObjectKey{Name: scp.Spec.InstanceSecret.Name, Namespace: sharedNamespace}, is); err != nil {
+			return err
+		}
+		for k, v := range is.Data {
+			instance[k] = string(v)
 		}
 	}
 
@@ -184,36 +185,16 @@ func (r *EphemeralEnvironmentReconciler) submitShared(ctx context.Context, env *
 		return fmt.Errorf("invalid provision script: %w", err)
 	}
 
-	provName := "shared-" + sc.Name + "-provision-" + env.Name
+	provName := provisioner.ProvisionJobName(env.Name, component.Name) + "-credentials"
 	if err := r.ensureProvisionSecret(ctx, provName, env.Name, genSecret); err != nil {
 		return err
 	}
 
-	script := *scp.Spec.Provision
-	script.Command = append([]string(nil), scp.Spec.Provision.Command...)
-	renderVars := renderer.Vars{Env: renderer.EnvVarsFor(env.Name, genSecret), Instance: instance}
-	if script.Script != "" {
-		rendered, err := renderer.Render(script.Script, renderVars)
-		if err != nil {
-			return fmt.Errorf("render provision script: %w", err)
-		}
-		script.Script = rendered
+	opts, err := renderProvisionOptions(env, component, sc, scp.Spec.Provision, genSecret, instance)
+	if err != nil {
+		return err
 	}
-	for i, c := range script.Command {
-		rendered, err := renderer.Render(c, renderVars)
-		if err != nil {
-			return fmt.Errorf("render provision command[%d]: %w", i, err)
-		}
-		script.Command[i] = rendered
-	}
-
-	if err := r.Provisioner.SubmitProvision(ctx, provisioner.ProvisionOptions{
-		EnvName:              env.Name,
-		ComponentName:        component.Name,
-		SharedName:           sc.Name,
-		Script:               script,
-		ProvisionerSecretRef: provName,
-	}); err != nil {
+	if err := r.Provisioner.SubmitProvision(ctx, opts); err != nil {
 		return err
 	}
 
@@ -224,6 +205,35 @@ func (r *EphemeralEnvironmentReconciler) submitShared(ctx context.Context, env *
 	setComponentPhase(env, component.Name, v1alpha1.PhaseSubmitting)
 	setComponentShared(env, component.Name)
 	return nil
+}
+
+func renderProvisionOptions(env *v1alpha1.EphemeralEnvironment, component v1alpha1.ComponentSpec, sc *v1alpha1.SharedComponent, script *v1alpha1.JobScript, genSecret string, instance map[string]string) (provisioner.ProvisionOptions, error) {
+	opts := provisioner.ProvisionOptions{
+		EnvUID: env.UID, EnvName: env.Name, ComponentName: component.Name, SharedName: sc.Name,
+		ProvisionerSecretRef: provisioner.ProvisionJobName(env.Name, component.Name) + "-credentials",
+	}
+
+	if err := script.Validate(); err != nil {
+		return opts, err
+	}
+
+	opts.Script = *script.DeepCopy()
+	vars := renderer.Vars{Env: renderer.EnvVarsFor(env.Name, genSecret), Instance: instance}
+
+	var err error
+	opts.Script.Script, err = renderer.Render(script.Script, vars)
+	if err != nil {
+		return opts, err
+	}
+
+	for i, command := range script.Command {
+		opts.Script.Command[i], err = renderer.Render(command, vars)
+		if err != nil {
+			return opts, err
+		}
+	}
+
+	return opts, nil
 }
 
 func (r *EphemeralEnvironmentReconciler) isConsumer(ctx context.Context, targetNs, sharedName string) (bool, error) {
@@ -357,24 +367,48 @@ func (r *EphemeralEnvironmentReconciler) observeShared(ctx context.Context, env 
 	if err := r.Get(ctx, client.ObjectKey{Name: component.SharedComponentRef, Namespace: env.Namespace}, sc); err != nil {
 		return false, err
 	}
+	scp := new(v1alpha1.SharedComponentProvider)
+	if err := r.Get(ctx, client.ObjectKey{Name: sc.Spec.Provider, Namespace: env.Namespace}, scp); err != nil {
+		return false, err
+	}
 
-	state, err := r.Provisioner.ObserveProvision(ctx, provisioner.ProvisionOptions{
-		EnvName:       env.Name,
-		ComponentName: component.Name,
-		SharedName:    sc.Name,
-	})
+	if scp.Spec.Provision == nil {
+		setComponentPhase(env, component.Name, v1alpha1.PhasePending)
+		return false, nil
+	}
+
+	binding := new(corev1.Secret)
+	if err := r.Get(ctx, client.ObjectKey{Name: env.Name + "-" + component.Name + "-binding", Namespace: env.Status.TargetNamespace}, binding); err != nil {
+		return false, err
+	}
+
+	instance := map[string]string{}
+	if scp.Spec.InstanceSecret != nil {
+		secret := new(corev1.Secret)
+		if err := r.Get(ctx, client.ObjectKey{Name: scp.Spec.InstanceSecret.Name, Namespace: sharedNamespace}, secret); err != nil {
+			return false, err
+		}
+		for k, v := range secret.Data {
+			instance[k] = string(v)
+		}
+	}
+
+	opts, err := renderProvisionOptions(env, component, sc, scp.Spec.Provision, string(binding.Data[generatedSecretKey]), instance)
+	if err != nil {
+		return false, err
+	}
+
+	state, err := r.Provisioner.ObserveProvision(ctx, opts)
 	if err != nil {
 		return false, err
 	}
 
 	switch state.Phase {
+	case deployer.PendingJobPhase:
+		setComponentPhase(env, component.Name, v1alpha1.PhasePending)
+		return false, nil
 	case deployer.SucceededJobPhase:
-		provName := "shared-" + sc.Name + "-provision-" + env.Name
-		provJobName := provisioner.ProvisionJobName(env.Name, component.Name)
-		if err := r.deleteJob(ctx, provJobName, sharedNamespace); err != nil {
-			return false, err
-		}
-		if err := r.deleteSecret(ctx, provName, sharedNamespace); err != nil {
+		if err := r.deleteSecret(ctx, opts.ProvisionerSecretRef, sharedNamespace); err != nil {
 			return false, err
 		}
 		setComponentPhase(env, component.Name, v1alpha1.PhaseReady)
@@ -399,9 +433,19 @@ func (r *EphemeralEnvironmentReconciler) deleteSecret(ctx context.Context, name,
 }
 
 func (r *EphemeralEnvironmentReconciler) deleteJob(ctx context.Context, name, ns string) error {
-	err := r.Delete(ctx, &batchv1.Job{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns}},
-		client.PropagationPolicy(metav1.DeletePropagationBackground))
-	return client.IgnoreNotFound(err)
+	job := new(batchv1.Job)
+	if err := r.namespaceReader().Get(ctx, client.ObjectKey{Name: name, Namespace: ns}, job); err != nil {
+		return client.IgnoreNotFound(err)
+	}
+	if !job.DeletionTimestamp.IsZero() {
+		return fmt.Errorf("job %s is still deleting", name)
+	}
+	if deployer.TerminalPhase(job) != deployer.RunningJobPhase {
+		return client.IgnoreNotFound(r.Delete(ctx, job, client.Preconditions{UID: &job.UID},
+			client.PropagationPolicy(metav1.DeletePropagationForeground)))
+	}
+
+	return fmt.Errorf("refusing to delete active job %s", name)
 }
 
 func sharedLabel(name string) string {

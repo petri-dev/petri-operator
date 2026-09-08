@@ -8,7 +8,7 @@
 *.so
 *.dylib
 bin/
-crds.yaml
+/crds.yaml
 /dist/
 /petri
 

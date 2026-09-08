@@ -1,0 +1,283 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  labels:
+    app.kubernetes.io/name: petri
+    app.kubernetes.io/managed-by: Helm
+  name: environmenttemplate-admin-role
+rules:
+- apiGroups:
+  - core.petri.run
+  resources:
+  - environmenttemplates
+  verbs:
+  - '*'
+- apiGroups:
+  - core.petri.run
+  resources:
+  - environmenttemplates/status
+  verbs:
+  - get
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  labels:
+    app.kubernetes.io/name: petri
+    app.kubernetes.io/managed-by: Helm
+  name: environmenttemplate-editor-role
+rules:
+- apiGroups:
+  - core.petri.run
+  resources:
+  - environmenttemplates
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - core.petri.run
+  resources:
+  - environmenttemplates/status
+  verbs:
+  - get
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  labels:
+    app.kubernetes.io/name: petri
+    app.kubernetes.io/managed-by: Helm
+  name: environmenttemplate-viewer-role
+rules:
+- apiGroups:
+  - core.petri.run
+  resources:
+  - environmenttemplates
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - core.petri.run
+  resources:
+  - environmenttemplates/status
+  verbs:
+  - get
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  labels:
+    app.kubernetes.io/name: petri
+    app.kubernetes.io/managed-by: Helm
+  name: ephemeralenvironment-admin-role
+rules:
+- apiGroups:
+  - core.petri.run
+  resources:
+  - ephemeralenvironments
+  verbs:
+  - '*'
+- apiGroups:
+  - core.petri.run
+  resources:
+  - ephemeralenvironments/status
+  verbs:
+  - get
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  labels:
+    app.kubernetes.io/name: petri
+    app.kubernetes.io/managed-by: Helm
+  name: ephemeralenvironment-editor-role
+rules:
+- apiGroups:
+  - core.petri.run
+  resources:
+  - ephemeralenvironments
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - core.petri.run
+  resources:
+  - ephemeralenvironments/status
+  verbs:
+  - get
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  labels:
+    app.kubernetes.io/name: petri
+    app.kubernetes.io/managed-by: Helm
+  name: ephemeralenvironment-viewer-role
+rules:
+- apiGroups:
+  - core.petri.run
+  resources:
+  - ephemeralenvironments
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - core.petri.run
+  resources:
+  - ephemeralenvironments/status
+  verbs:
+  - get
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  labels:
+    app.kubernetes.io/name: petri
+    app.kubernetes.io/managed-by: Helm
+  name: sharedcomponent-admin-role
+rules:
+- apiGroups:
+  - core.petri.run
+  resources:
+  - sharedcomponents
+  verbs:
+  - '*'
+- apiGroups:
+  - core.petri.run
+  resources:
+  - sharedcomponents/status
+  verbs:
+  - get
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  labels:
+    app.kubernetes.io/name: petri
+    app.kubernetes.io/managed-by: Helm
+  name: sharedcomponent-editor-role
+rules:
+- apiGroups:
+  - core.petri.run
+  resources:
+  - sharedcomponents
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - core.petri.run
+  resources:
+  - sharedcomponents/status
+  verbs:
+  - get
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  labels:
+    app.kubernetes.io/name: petri
+    app.kubernetes.io/managed-by: Helm
+  name: sharedcomponent-viewer-role
+rules:
+- apiGroups:
+  - core.petri.run
+  resources:
+  - sharedcomponents
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - core.petri.run
+  resources:
+  - sharedcomponents/status
+  verbs:
+  - get
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  labels:
+    app.kubernetes.io/name: petri
+    app.kubernetes.io/managed-by: Helm
+  name: sharedcomponentprovider-admin-role
+rules:
+- apiGroups:
+  - core.petri.run
+  resources:
+  - sharedcomponentproviders
+  verbs:
+  - '*'
+- apiGroups:
+  - core.petri.run
+  resources:
+  - sharedcomponentproviders/status
+  verbs:
+  - get
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  labels:
+    app.kubernetes.io/name: petri
+    app.kubernetes.io/managed-by: Helm
+  name: sharedcomponentprovider-editor-role
+rules:
+- apiGroups:
+  - core.petri.run
+  resources:
+  - sharedcomponentproviders
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - core.petri.run
+  resources:
+  - sharedcomponentproviders/status
+  verbs:
+  - get
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  labels:
+    app.kubernetes.io/name: petri
+    app.kubernetes.io/managed-by: Helm
+  name: sharedcomponentprovider-viewer-role
+rules:
+- apiGroups:
+  - core.petri.run
+  resources:
+  - sharedcomponentproviders
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - core.petri.run
+  resources:
+  - sharedcomponentproviders/status
+  verbs:
+  - get
