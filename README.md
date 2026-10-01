@@ -122,7 +122,7 @@ are rendered from that exact archive. GoReleaser attaches all three artifacts
 to a draft release. The workflow explicitly logs Helm into GHCR, pushes the
 same chart archive, then uses an empty credential store to pull and compare
 the chart and pull both images for Linux amd64 and arm64. Only a successful
-anonymous smoke check publishes the draft. It never updates `latest` images.
+anonymous smoke check publishes the draft.
 
 Maintainers must grant this repository Actions write access to all three
 GHCR packages (`petri-operator`, `petri-deployer`, and `charts/petri`) and make
